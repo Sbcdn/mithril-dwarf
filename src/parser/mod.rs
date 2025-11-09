@@ -1,7 +1,9 @@
-pub mod byte_parser;
+pub mod byte_deserializer;
 #[cfg(feature = "host")]
-pub mod byte_parser_writer;
+pub mod byte_serializer;
 #[cfg(feature = "host")]
 pub mod minimal_converter;
 
-pub use byte_parser::certificate_from_bytes_fast;
+pub use byte_deserializer::*;
+#[cfg(feature = "host")]
+pub use byte_serializer::*;

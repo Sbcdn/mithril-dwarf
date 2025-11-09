@@ -1,6 +1,6 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use mithril_common::entities::Certificate;
-use mithril_dwarf::certificate_from_bytes_fast;
+use mithril_dwarf::certificate_from_bytes;
 use std::fs;
 
 fn benchmark_parsers(c: &mut Criterion) {
@@ -12,7 +12,7 @@ fn benchmark_parsers(c: &mut Criterion) {
     // Benchmark zero-copy parser
     group.bench_function("zerocopy_parser", |b| {
         b.iter(|| {
-            let result = certificate_from_bytes_fast(black_box(&cert_bytes));
+            let result = certificate_from_bytes(black_box(&cert_bytes));
             black_box(result)
         })
     });

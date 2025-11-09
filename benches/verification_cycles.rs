@@ -2,7 +2,7 @@
 
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use mithril_dwarf::{
-    certificate_from_bytes_fast,
+    certificate_from_bytes,
     certificate_verification::{basic_checks, complex_checks, medium_checks},
 };
 use std::hint::black_box;
@@ -21,7 +21,7 @@ fn load_test_prev_cert() -> Vec<u8> {
 #[library_benchmark]
 fn bench_verify_not_infinite_loop() {
     let bytes = load_test_cert();
-    let cert = certificate_from_bytes_fast(black_box(&bytes)).unwrap();
+    let cert = certificate_from_bytes(black_box(&bytes)).unwrap();
     let result = basic_checks::verify_not_infinite_loop(black_box(&cert));
     black_box(result);
 }
@@ -29,7 +29,7 @@ fn bench_verify_not_infinite_loop() {
 #[library_benchmark]
 fn bench_verify_epoch_matches() {
     let bytes = load_test_cert();
-    let cert = certificate_from_bytes_fast(black_box(&bytes)).unwrap();
+    let cert = certificate_from_bytes(black_box(&bytes)).unwrap();
     let result = basic_checks::verify_epoch_matches_protocol_message(black_box(&cert));
     black_box(result);
 }
@@ -38,8 +38,8 @@ fn bench_verify_epoch_matches() {
 fn bench_verify_epoch_chaining() {
     let bytes = load_test_cert();
     let prev_bytes = load_test_prev_cert();
-    let cert = certificate_from_bytes_fast(black_box(&bytes)).unwrap();
-    let prev_cert = certificate_from_bytes_fast(black_box(&prev_bytes)).unwrap();
+    let cert = certificate_from_bytes(black_box(&bytes)).unwrap();
+    let prev_cert = certificate_from_bytes(black_box(&prev_bytes)).unwrap();
     let result = basic_checks::verify_epoch_chaining(black_box(&cert), black_box(&prev_cert));
     black_box(result);
 }
@@ -48,8 +48,8 @@ fn bench_verify_epoch_chaining() {
 fn bench_verify_previous_hash() {
     let bytes = load_test_cert();
     let prev_bytes = load_test_prev_cert();
-    let cert = certificate_from_bytes_fast(black_box(&bytes)).unwrap();
-    let prev_cert = certificate_from_bytes_fast(black_box(&prev_bytes)).unwrap();
+    let cert = certificate_from_bytes(black_box(&bytes)).unwrap();
+    let prev_cert = certificate_from_bytes(black_box(&prev_bytes)).unwrap();
     let result =
         basic_checks::verify_previous_hash_matches(black_box(&cert), black_box(&prev_cert));
     black_box(result);
@@ -59,8 +59,8 @@ fn bench_verify_previous_hash() {
 fn bench_all_basic_checks() {
     let bytes = load_test_cert();
     let prev_bytes = load_test_prev_cert();
-    let cert = certificate_from_bytes_fast(black_box(&bytes)).unwrap();
-    let prev_cert = certificate_from_bytes_fast(black_box(&prev_bytes)).unwrap();
+    let cert = certificate_from_bytes(black_box(&bytes)).unwrap();
+    let prev_cert = certificate_from_bytes(black_box(&prev_bytes)).unwrap();
 
     let result = basic_checks::verify_not_infinite_loop(&cert)
         .and_then(|_| basic_checks::verify_epoch_matches_protocol_message(&cert))
@@ -75,7 +75,7 @@ fn bench_all_basic_checks() {
 #[library_benchmark]
 fn bench_verify_hash_matches() {
     let bytes = load_test_cert();
-    let cert = certificate_from_bytes_fast(black_box(&bytes)).unwrap();
+    let cert = certificate_from_bytes(black_box(&bytes)).unwrap();
     let result = medium_checks::verify_hash_matches_content(black_box(&cert));
     black_box(result);
 }
@@ -83,7 +83,7 @@ fn bench_verify_hash_matches() {
 #[library_benchmark]
 fn bench_verify_signed_message() {
     let bytes = load_test_cert();
-    let cert = certificate_from_bytes_fast(black_box(&bytes)).unwrap();
+    let cert = certificate_from_bytes(black_box(&bytes)).unwrap();
     let result = medium_checks::verify_signed_message_matches_protocol(black_box(&cert));
     black_box(result);
 }
@@ -91,7 +91,7 @@ fn bench_verify_signed_message() {
 #[library_benchmark]
 fn bench_all_medium_checks() {
     let bytes = load_test_cert();
-    let cert = certificate_from_bytes_fast(black_box(&bytes)).unwrap();
+    let cert = certificate_from_bytes(black_box(&bytes)).unwrap();
 
     let result = medium_checks::verify_hash_matches_content(&cert)
         .and_then(|_| medium_checks::verify_signed_message_matches_protocol(&cert));
@@ -105,8 +105,8 @@ fn bench_all_medium_checks() {
 fn bench_verify_avk_chain() {
     let bytes = load_test_cert();
     let prev_bytes = load_test_prev_cert();
-    let cert = certificate_from_bytes_fast(black_box(&bytes)).unwrap();
-    let prev_cert = certificate_from_bytes_fast(black_box(&prev_bytes)).unwrap();
+    let cert = certificate_from_bytes(black_box(&bytes)).unwrap();
+    let prev_cert = certificate_from_bytes(black_box(&prev_bytes)).unwrap();
 
     let result = complex_checks::verify_avk_chain(black_box(&cert), black_box(&prev_cert));
     black_box(result);
@@ -116,8 +116,8 @@ fn bench_verify_avk_chain() {
 fn bench_verify_protocol_params_chain() {
     let bytes = load_test_cert();
     let prev_bytes = load_test_prev_cert();
-    let cert = certificate_from_bytes_fast(black_box(&bytes)).unwrap();
-    let prev_cert = certificate_from_bytes_fast(black_box(&prev_bytes)).unwrap();
+    let cert = certificate_from_bytes(black_box(&bytes)).unwrap();
+    let prev_cert = certificate_from_bytes(black_box(&prev_bytes)).unwrap();
 
     let result =
         complex_checks::verify_protocol_params_chain(black_box(&cert), black_box(&prev_cert));
@@ -129,7 +129,7 @@ fn bench_verify_protocol_params_chain() {
 #[library_benchmark]
 fn bench_verify_bls_multisig() {
     let bytes = load_test_cert();
-    let cert = certificate_from_bytes_fast(black_box(&bytes)).unwrap();
+    let cert = certificate_from_bytes(black_box(&bytes)).unwrap();
 
     let result = complex_checks::verify_bls_multisig(black_box(&cert));
     black_box(result);
@@ -141,8 +141,8 @@ fn bench_verify_bls_multisig() {
 fn bench_full_standard_verification() {
     let bytes = load_test_cert();
     let prev_bytes = load_test_prev_cert();
-    let cert = certificate_from_bytes_fast(black_box(&bytes)).unwrap();
-    let prev_cert = certificate_from_bytes_fast(black_box(&prev_bytes)).unwrap();
+    let cert = certificate_from_bytes(black_box(&bytes)).unwrap();
+    let prev_cert = certificate_from_bytes(black_box(&prev_bytes)).unwrap();
 
     use mithril_dwarf::certificate_verification::verify_standard_certificate;
     let result = verify_standard_certificate(black_box(&cert), black_box(&prev_cert));

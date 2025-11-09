@@ -2,7 +2,7 @@
 //! These involve SHA-256 hashing to match Mithril's exact hash computation
 
 use super::VerifyError;
-use crate::parser::byte_parser::{
+use crate::parser::{
     AggregateVerificationKeyParsed, CertificateZeroCopy, MetadataBasicZeroCopy, MultiSigParsed,
     ProtocolMessageBasicZeroCopy, SignatureBasicZeroCopy, SignatureParsed,
 };
@@ -450,14 +450,14 @@ pub fn protocol_message_key_to_string(discriminant: u8) -> &'static str {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::parser::byte_parser::{ParseError, certificate_from_bytes_fast};
+    use crate::parser::{ParseError, certificate_from_bytes};
 
     /// Test helper: Parse a certificate from bytes and verify its hash
     pub fn test_certificate_hash_from_bytes(
         cert_bytes: &[u8],
     ) -> Result<HashTestResult, TestError> {
         // Parse certificate
-        let cert = certificate_from_bytes_fast(cert_bytes).map_err(|e| TestError::ParseError(e))?;
+        let cert = certificate_from_bytes(cert_bytes).map_err(|e| TestError::ParseError(e))?;
 
         // Get the original hash (from certificate)
         let original_hash = core::str::from_utf8(cert.hash)

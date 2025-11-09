@@ -1,13 +1,9 @@
-use std::collections::BTreeMap;
-use std::io::{Cursor, Read, Write};
-
-use blake2::digest::{Digest, FixedOutput};
 use chrono::{DateTime, Utc};
 use mithril_client::common::{ProtocolMessage, SignedEntityType};
 use mithril_common::crypto_helper::{ProtocolAggregateVerificationKey, ProtocolMultiSignature};
 use mithril_common::entities::{Certificate, CertificateMetadata, CertificateSignature};
 // BlsSignature & BlsVerificationKey require the feature "benchmark-internals" to be accessible
-use mithril_stm::{BlsSignature, BlsVerificationKey, StmAggrSig, StmSig, VerificationKey};
+use mithril_stm::{BlsSignature, BlsVerificationKey};
 
 // Helper struct for writing bytes
 struct ByteWriter {
@@ -97,7 +93,7 @@ impl ByteWriter {
 
 // Main serialization function
 #[inline]
-pub fn certificate_to_bytes_opt(cert: &Certificate) -> Vec<u8> {
+pub fn certificate_to_bytes(cert: &Certificate) -> Vec<u8> {
     let mut writer = ByteWriter::new();
 
     // Write hash and previous_hash
