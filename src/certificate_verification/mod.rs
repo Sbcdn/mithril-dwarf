@@ -39,6 +39,7 @@ pub enum VerifyError {
     // Genesis verification errors
     Ed25519VerificationFailed,
     InvalidGenesisSignature,
+    NoGenesisKeyProvided,
 
     // Parsing/encoding errors
     InvalidUtf8,
@@ -168,12 +169,16 @@ pub fn verify_standard_certificate(
 pub fn verify_certificate(
     cert: &CertificateZeroCopy,
     prev_cert: Option<&CertificateZeroCopy>,
-    genesis_vk: &[u8; 32],
+    genesis_vk: Option<&[u8; 32]>,
 ) -> Result<(), VerifyError> {
     match &cert.signature {
         SignatureBasicZeroCopy::Genesis { .. } => {
             // Genesis certificate
-            verify_genesis_certificate(cert, genesis_vk)
+            if let Some(genesis_key) = genesis_vk {
+                verify_genesis_certificate(cert, genesis_key)
+            } else {
+                Err(VerifyError::NoGenesisKeyProvided)
+            }
         }
         SignatureBasicZeroCopy::Multi { .. } => {
             // Standard certificate - needs previous certificate
@@ -188,7 +193,7 @@ pub fn verify_certificate(
 /// This matches Mithril's verify_certificate_chain logic
 pub fn verify_certificate_chain(
     certificates: &[CertificateZeroCopy],
-    genesis_vk: &[u8; 32],
+    genesis_vk: Option<&[u8; 32]>,
 ) -> Result<(), VerifyError> {
     if certificates.is_empty() {
         return Ok(());
