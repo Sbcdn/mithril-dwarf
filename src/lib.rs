@@ -14,6 +14,7 @@ pub use mithril_common::{
     entities::Certificate,
     messages::CertificateMessage,
 };
+
 #[cfg(feature = "host")]
 pub use parser::certificate_to_bytes;
 
