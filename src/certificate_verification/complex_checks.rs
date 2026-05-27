@@ -1,17 +1,10 @@
-//! Complex verification checks (expensive, ~1M+ cycles)
-//!
-//! These involve cryptographic operations and Merkle tree verification.
+//! Complex verification checks (cryptographic operations and Merkle tree verification).
 //!
 //! # Optimizations Applied
 //!
 //! - **Cached c computation**: ln(1-phi_f) is cached by phi_f value
 //! - **Skip q reduction**: ev_max/(ev_max-ev) is already in lowest terms
-//! - **Fast from_float**: Uses u64 GCD for small values (~192x faster)
-//!
-//! # Performance
-//!
-//! Lottery verification: ~120K cycles per check
-//! Total improvement: 2x faster than num-bigint baseline (477M vs 954M cycles)
+//! - **Fast from_float**: Uses u64 GCD for small values
 
 use super::VerifyError;
 use crate::parser::byte_deserializer::{
@@ -41,7 +34,7 @@ static C_CACHE: OnceLock<Mutex<HashMap<u64, Ratio512>>> = OnceLock::new();
 /// Get cached c value for phi_f, computing if not cached
 ///
 /// Since phi_f is constant for a certificate, this avoids recomputing
-/// ln(1-phi_f) for every lottery check (~384K cycles saved per reuse)
+/// ln(1-phi_f) for every lottery check (cached for reuse)
 fn get_c_cached(phi_f: f64) -> Ratio512 {
     let key = phi_f.to_bits();
 
@@ -136,7 +129,7 @@ pub fn verify_protocol_params_chain(
 // BLS MULTI-SIGNATURE VERIFICATION
 // ============================================================================
 
-/// Verify BLS multi-signature (most expensive check: ~55M cycles)
+/// Verify BLS multi-signature (most expensive check)
 #[inline]
 pub fn verify_bls_multisig(cert: &CertificateZeroCopy) -> Result<(), VerifyError> {
     let multi_sig = match &cert.signature {
@@ -254,14 +247,12 @@ fn evaluate_dense_mapping(msg: &[u8], index: u64, sigma: &[u8; 48]) -> [u8; 64] 
 /// Uses Taylor series: exp(x) ≈ 1 + x + x²/2! + x³/3! + ...
 /// Convergence is checked with error bounds: phi ± 3*last_term
 ///
-/// # Performance
+/// # Optimizations
 ///
-/// - ~120K cycles per lottery check
-/// - Optimizations:
-///   - Cached c = ln(1-phi_f) (saves ~384K cycles on cache hit)
-///   - Skip q reduction (saves ~430K cycles, q is already coprime)
-///   - Fast u64 GCD in from_float (saves ~380K cycles)
-///   - Converges in 1 iteration for typical values
+/// - Cached c = ln(1-phi_f) (cache hit avoids recomputation)
+/// - Skip q reduction (q is already coprime)
+/// - Fast u64 GCD in from_float
+/// - Converges in 1 iteration for typical values
 #[inline]
 fn is_lottery_won(phi_f: f64, ev: [u8; 64], stake: u64, total_stake: u64) -> bool {
     // Special case: phi_f = 1 means always win
@@ -278,7 +269,7 @@ fn is_lottery_won(phi_f: f64, ev: [u8; 64], stake: u64, total_stake: u64) -> boo
     // GCD(2^512, 2^512 - ev) = 1 for random ev
     let q = Ratio512::new_raw(ev_max, denominator, false);
 
-    // OPTIMIZATION: Use cached c value (saves ~384K cycles on hit)
+    // OPTIMIZATION: Use cached c value
     let c = get_c_cached(phi_f);
 
     // Compute w = stake / total_stake (already reduced via from_u64)

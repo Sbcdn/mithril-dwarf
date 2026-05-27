@@ -12,7 +12,7 @@ The name fits the role: **dwarf**, because the goal is to compress a piece of Mi
 - Designed for **zkVM guests** (primary target: [RISC Zero](https://risczero.com)) and other compute-constrained environments where every cycle and every heap allocation costs.
 - **Bit-identical to upstream** — every intermediate hash, lottery outcome, AVK transition and BLS aggregate is checked against `mithril-common`'s `MithrilCertificateVerifier` in the equivalence harness.
 - Custom **zero-copy wire format** for certificates: a `CertificateZeroCopy` is just typed views into a `&[u8]`. No heap, no `serde`, no JSON parser on the hot path.
-- Verification is **tiered cheapest-first** so invalid chains fail in thousands of cycles, not millions.
+- Verification is **tiered cheapest-first** so invalid chains fail in the comparison phase, before any cryptography runs.
 
 ---
 
@@ -42,9 +42,9 @@ src/
 │   └── minimal_converter.rs      (host-only) bridges to mithril-common types
 └── certificate_verification/
     ├── mod.rs                    verify_certificate{,_chain,_genesis,_standard}
-    ├── basic_checks.rs           Phase 1 — comparisons, ~5K cycles total
-    ├── medium_checks.rs          Phase 2 — SHA-256 over canonical bytes, ~100K cycles each
-    └── complex_checks.rs         Phases 3–4 — BLS, Merkle proofs, lottery, ~23M cycles
+    ├── basic_checks.rs           Phase 1 — comparisons
+    ├── medium_checks.rs          Phase 2 — SHA-256 over canonical bytes
+    └── complex_checks.rs         Phases 3–4 — BLS, Merkle proofs, lottery
 ```
 
 ### The parser
@@ -64,12 +64,12 @@ The host-only `byte_serializer.rs` and `minimal_converter.rs` exist purely to co
 
 `verify_standard_certificate` in [src/certificate_verification/mod.rs:92](src/certificate_verification/mod.rs#L92) is structured as four phases ordered by cost. Each phase only runs if the cheaper phases passed:
 
-| Phase | Approx. cost | What it proves |
-|------:|------------:|----------------|
-| 1. Basic checks    | ~5K cycles each   | Hash isn't pointing at itself; epoch matches the protocol message; epoch chains correctly (`E` or `E+1`); `previous_hash` links to `prev_cert`. |
-| 2. Medium checks   | ~100K cycles each | `certificate_hash` matches a recomputation of the hash; `signed_message == SHA256(protocol_message)` (the next AVK is itself one of the protocol-message parts). SHA-256 runs over hand-built canonical bytes — no `serde_json`. |
-| 3. Chain checks    | varies            | Same epoch ⇒ AVK and protocol params must match exactly; epoch boundary ⇒ they must match the `next_*` fields carried in the previous certificate. |
-| 4. BLS multi-sig   | ~23M cycles       | Aggregate BLS verification via `blst`, Merkle batch proof via Blake2b, lottery check via Taylor-series `ln(1 - φ_f)` over rational arithmetic. |
+| Phase | What it proves |
+|------:|----------------|
+| 1. Basic checks    | Hash isn't pointing at itself; epoch matches the protocol message; epoch chains correctly (`E` or `E+1`); `previous_hash` links to `prev_cert`. |
+| 2. Medium checks   | `certificate_hash` matches a recomputation of the hash; `signed_message == SHA256(protocol_message)` (the next AVK is itself one of the protocol-message parts). SHA-256 runs over hand-built canonical bytes — no `serde_json`. |
+| 3. Chain checks    | Same epoch ⇒ AVK and protocol params must match exactly; epoch boundary ⇒ they must match the `next_*` fields carried in the previous certificate. |
+| 4. BLS multi-sig   | Aggregate BLS verification via `blst`, Merkle batch proof via Blake2b, lottery check via Taylor-series `ln(1 - φ_f)` over rational arithmetic. |
 
 Two design choices are worth flagging:
 
@@ -163,6 +163,8 @@ The correctness story is held together by `tests/equivalence_tests.rs`. For ever
 2. Runs upstream `mithril-common`'s `MithrilCertificateVerifier`, capturing every intermediate value the implementation can hand back (signed message, hash, AVK transitions, lottery results, batch-proof outcomes).
 3. Converts the same certificate into the zero-copy wire format and runs `mithril-dwarf`'s verifier.
 4. Asserts the two implementations agree at every step — not just the final pass/fail, but each intermediate computation.
+
+> **First-time setup:** the test corpus under `tests/test_data/certificates/` is not committed. Populate it with the [`fetch_certificates`](#fetching-real-chains) binary before running the suite.
 
 ```bash
 cargo test -F tests --test equivalence_tests

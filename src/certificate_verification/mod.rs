@@ -11,14 +11,14 @@ use crate::parser::byte_deserializer::{CertificateZeroCopy, SignatureBasicZeroCo
 /// Lightweight error type (no string allocations!)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyError {
-    // Basic check errors (~5K cycles)
+    // Basic check errors
     InfiniteLoop,
     PreviousHashMismatch,
     EpochGap,
     EpochMismatch,
     CurrentEpochNotFound,
 
-    // Medium check errors (~100K cycles)
+    // Medium check errors
     HashMismatch,
     SignedMessageMismatch,
 
@@ -28,7 +28,7 @@ pub enum VerifyError {
     NextAVKNotFound,
     NextProtocolParamsNotFound,
 
-    // BLS verification errors (~23M cycles)
+    // BLS verification errors
     BLSVerificationFailed,
     IndexOutOfBounds,
     IndexNotUnique,
@@ -99,7 +99,7 @@ pub fn verify_standard_certificate(
         _ => return Err(VerifyError::NotStandardCertificate),
     };
 
-    // === PHASE 1: BASIC CHECKS (~5K cycles) ===
+    // === PHASE 1: BASIC CHECKS ===
     // Fail fast checks that don't require computation
     //let start = env::cycle_count();
     basic_checks::verify_not_infinite_loop(cert)?;
@@ -121,7 +121,7 @@ pub fn verify_standard_certificate(
     //let end = env::cycle_count();
     //eprintln!("verify_previous_hash_matches: {}", end - start);
 
-    // === PHASE 2: MEDIUM CHECKS (~100K cycles) ===
+    // === PHASE 2: MEDIUM CHECKS ===
     // Hash computations
     //let start = env::cycle_count();
     medium_checks::verify_hash_matches_content(cert)?;
@@ -153,7 +153,7 @@ pub fn verify_standard_certificate(
         //eprintln!("verify_protocol_params_chain: {}", end - start);
     }
 
-    // === PHASE 4: BLS MULTI-SIGNATURE VERIFICATION (~23M cycles) ===
+    // === PHASE 4: BLS MULTI-SIGNATURE VERIFICATION ===
     // Most expensive check - only if all above passed!
     //let start = env::cycle_count();
     complex_checks::verify_bls_multisig(cert)?;
