@@ -183,3 +183,11 @@ This crate is **pre-1.0** (`v0.1.0`) and tracks a specific Mithril branch — th
 The RISC Zero precompile story for `ed25519-dalek`, `blst`, and `sha2` is currently handled via the commented `[patch.crates-io]` block in [Cargo.toml](Cargo.toml#L34-L37); integrators building a guest binary will typically want to re-enable equivalents in the workspace where the patch can take effect.
 
 Contributions, audits, and bug reports are welcome — the equivalence harness is the contract; if you can break it, please open an issue.
+
+---
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
+
+Copyright 2026 Torben Poguntke.
