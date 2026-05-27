@@ -1,4 +1,4 @@
-//! Medium-cost verification checks (~50-100K cycles each)
+//! Medium-cost verification checks
 //! These involve SHA-256 hashing to match Mithril's exact hash computation
 
 use super::VerifyError;
@@ -9,7 +9,7 @@ use crate::parser::{
 use sha2::{Digest, Sha256};
 
 /// Verify that the signed_message equals the hash of the protocol_message
-/// Cost: ~50K cycles (SHA-256 hash + comparison)
+/// SHA-256 hash + comparison.
 #[inline]
 pub fn verify_signed_message_matches_protocol(
     cert: &CertificateZeroCopy,
@@ -27,7 +27,7 @@ pub fn verify_signed_message_matches_protocol(
 }
 
 /// Verify that the certificate's hash matches its computed hash
-/// Cost: ~750K cycles (SHA-256 hash with nested hashes + JSON building)
+/// SHA-256 hash with nested hashes + JSON building.
 #[inline]
 pub fn verify_hash_matches_content(cert: &CertificateZeroCopy) -> Result<(), VerifyError> {
     let computed_hash_hex = compute_certificate_hash(cert)?;
@@ -148,7 +148,6 @@ pub fn compute_signer_hash(party_id: &[u8], stake: u64) -> String {
 
 /// Convert AVK to hex-encoded JSON string (NO SERDE!)
 /// Manually constructs: {"mt_commitment":{"root":[...],"nr_leaves":N},"total_stake":M}
-/// Cost: ~50K cycles
 #[inline]
 pub fn avk_to_json_hex(avk: &AggregateVerificationKeyParsed) -> Result<String, VerifyError> {
     use core::fmt::Write;
@@ -236,10 +235,10 @@ pub fn feed_entity_type_hash(hasher: &mut Sha256, discriminant: u8, data: &[u64]
 
 /// Convert MultiSigParsed to hex-encoded JSON (NO SERDE!)
 /// Constructs: {"signatures":[...],"batch_proof":{...}}
-/// Cost: ~500K cycles (complex structure with 176 signatures)
+/// Complex structure with many signatures.
 #[inline]
 pub fn multi_signature_to_json_hex(multi_sig: &MultiSigParsed) -> Result<String, VerifyError> {
-    // Pre-allocate: ~2KB for 176 signatures
+    // Pre-allocate space for the signature list
     let mut json = String::with_capacity(2048);
 
     json.push_str(r#"{"signatures":["#);

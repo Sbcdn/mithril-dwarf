@@ -1,4 +1,4 @@
-//! Ultra-cheap verification checks (<10K cycles total)
+//! Ultra-cheap verification checks (simple comparisons, no cryptography)
 //! These checks use only comparisons and should be done first to fail fast.
 
 use super::VerifyError;
@@ -8,7 +8,7 @@ use crate::parser::CertificateZeroCopy;
 const CURRENT_EPOCH: u8 = 4;
 
 /// Check if certificate is chaining to itself (infinite loop)
-/// Cost: ~100 cycles (just a slice comparison)
+/// Just a slice comparison.
 #[inline]
 pub fn verify_not_infinite_loop(cert: &CertificateZeroCopy) -> Result<(), VerifyError> {
     if cert.hash == cert.previous_hash {
@@ -18,7 +18,7 @@ pub fn verify_not_infinite_loop(cert: &CertificateZeroCopy) -> Result<(), Verify
 }
 
 /// Verify that certificate's previous_hash matches the previous certificate's hash
-/// Cost: ~100 cycles (slice comparison)
+/// Slice comparison.
 #[inline]
 pub fn verify_previous_hash_matches(
     cert: &CertificateZeroCopy,
@@ -31,7 +31,7 @@ pub fn verify_previous_hash_matches(
 }
 
 /// Verify epoch chaining: epochs must be same or increment by exactly 1
-/// Cost: ~100 cycles (two u64 comparisons)
+/// Two u64 comparisons.
 #[inline]
 pub fn verify_epoch_chaining(
     cert: &CertificateZeroCopy,
@@ -48,7 +48,7 @@ pub fn verify_epoch_chaining(
 }
 
 /// Verify that epoch in certificate matches the CurrentEpoch in protocol_message
-/// Cost: ~1K cycles (iterate protocol message parts, parse number)
+/// Iterates protocol message parts, parses number.
 #[inline]
 pub fn verify_epoch_matches_protocol_message(
     cert: &CertificateZeroCopy,
@@ -68,7 +68,7 @@ pub fn verify_epoch_matches_protocol_message(
 }
 
 /// Verify AVK chaining when certificates are in SAME epoch
-/// Cost: ~1K cycles (just slice comparison)
+/// Slice comparison.
 #[inline]
 pub fn verify_avk_same_epoch(
     cert: &CertificateZeroCopy,
@@ -87,7 +87,7 @@ pub fn verify_avk_same_epoch(
 }
 
 /// Verify protocol parameters chaining when certificates are in SAME epoch
-/// Cost: ~1K cycles (compare k, m, phi_f)
+/// Compares k, m, phi_f.
 #[inline]
 pub fn verify_protocol_params_same_epoch(
     cert: &CertificateZeroCopy,
@@ -106,7 +106,7 @@ pub fn verify_protocol_params_same_epoch(
 }
 
 // Helper: Parse u64 from UTF-8 bytes (used for epoch parsing)
-// Cost: ~500 cycles (UTF-8 validation + parse)
+// UTF-8 validation + parse
 #[inline]
 fn parse_u64_from_utf8(bytes: &[u8]) -> Result<u64, VerifyError> {
     let s = core::str::from_utf8(bytes).map_err(|_| VerifyError::InvalidUtf8)?;
