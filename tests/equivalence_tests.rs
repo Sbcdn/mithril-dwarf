@@ -10,7 +10,7 @@ use std::sync::Arc;
 use mithril_common::entities::{Certificate, CertificateSignature};
 use mithril_common::messages::CertificateMessage;
 use mithril_dwarf::certificate_verification::VerifyError;
-use mithril_dwarf::{certificate_from_bytes, certificate_to_bytes_opt, verify_genesis_certificate};
+use mithril_dwarf::{certificate_from_bytes, certificate_to_bytes, verify_genesis_certificate};
 
 /// Deep equivalence test result for a single check
 #[derive(Debug)]
@@ -65,8 +65,8 @@ impl DeepEquivalenceTest {
         let current_mithril: Certificate = current.clone().try_into().unwrap();
         let previous_mithril: Certificate = previous.clone().try_into().unwrap();
 
-        let current_bytes = certificate_to_bytes_opt(&current_mithril);
-        let previous_bytes = certificate_to_bytes_opt(&previous_mithril);
+        let current_bytes = certificate_to_bytes(&current_mithril);
+        let previous_bytes = certificate_to_bytes(&previous_mithril);
 
         let current_dwarf = certificate_from_bytes(&current_bytes).unwrap();
         let previous_dwarf = certificate_from_bytes(&previous_bytes).unwrap();
@@ -966,7 +966,7 @@ pub fn assert_genesis_equivalence(
 
     // Convert to both formats
     let genesis_mithril: Certificate = genesis_cert.clone().try_into().unwrap();
-    let genesis_bytes = certificate_to_bytes_opt(&genesis_mithril);
+    let genesis_bytes = certificate_to_bytes(&genesis_mithril);
     let genesis_dwarf = certificate_from_bytes(&genesis_bytes).unwrap();
 
     let genesis_vk: [u8; 32] = Ed25519VerificationKey::from_json_hex(genesis_vk)

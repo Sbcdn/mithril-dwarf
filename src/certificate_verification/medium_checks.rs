@@ -318,7 +318,7 @@ pub fn serialize_single_signature(
 /// Direct translation from mithril-stm's from_bytes()
 /// Format: len_v (u64 BE) | len_i (u64 BE) | values (32 bytes each) | indices (u64 BE each)
 #[inline]
-pub fn parse_batch_proof(bytes: &[u8]) -> Result<ParsedBatchProof, VerifyError> {
+pub fn parse_batch_proof(bytes: &[u8]) -> Result<ParsedBatchProof<'_>, VerifyError> {
     const HASH_SIZE: usize = 32; // Blake2b<U32>
 
     if bytes.len() < 16 {
