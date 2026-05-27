@@ -1,6 +1,6 @@
-use crate::parser::byte_parser::{
+use crate::parser::{
     AggregateVerificationKeyParsed, CertificateZeroCopy, MetadataBasicZeroCopy, MultiSigParsed,
-    ProtocolMessageBasicZeroCopy, SignatureBasicZeroCopy, SignatureParsed,
+    ProtocolMessageBasicZeroCopy, SignatureBasicZeroCopy,
 };
 use anyhow::anyhow;
 use chrono::{DateTime, Utc};
@@ -15,7 +15,7 @@ use mithril_common::{
 use mithril_stm::{
     AggregateSignature, AggregateVerificationKey, BlsSignature, BlsVerificationKey,
     MerkleBatchPath, MerkleTreeBatchCommitment, MerkleTreeLeaf, SingleSignature,
-    SingleSignatureWithRegisteredParty, StmAggrVerificationKey,
+    SingleSignatureWithRegisteredParty,
 };
 use std::collections::BTreeMap;
 

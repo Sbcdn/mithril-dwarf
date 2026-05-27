@@ -217,9 +217,7 @@ pub enum SignatureBasicZeroCopy<'a> {
 
 // Fast parsing function
 #[inline]
-pub fn certificate_from_bytes_fast<'a>(
-    bytes: &'a [u8],
-) -> Result<CertificateZeroCopy<'a>, ParseError> {
+pub fn certificate_from_bytes<'a>(bytes: &'a [u8]) -> Result<CertificateZeroCopy<'a>, ParseError> {
     let mut parser = FastByteParser::new(bytes);
 
     let hash = parser.read_bytes_slice()?;

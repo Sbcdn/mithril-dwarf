@@ -2,7 +2,7 @@
 //! These checks use only comparisons and should be done first to fail fast.
 
 use super::VerifyError;
-use crate::parser::byte_parser::CertificateZeroCopy;
+use crate::parser::CertificateZeroCopy;
 
 // Protocol message part key discriminants
 const CURRENT_EPOCH: u8 = 4;

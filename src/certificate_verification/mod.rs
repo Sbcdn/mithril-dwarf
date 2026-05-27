@@ -1,11 +1,12 @@
 //! Certificate verification for RISC0
 //! Optimized for minimal cycle count while maintaining security
+//use risc0_zkvm::guest::env;
 
 pub mod basic_checks;
 pub mod complex_checks;
 pub mod medium_checks;
 
-use crate::parser::byte_parser::{CertificateZeroCopy, SignatureBasicZeroCopy};
+use crate::parser::byte_deserializer::{CertificateZeroCopy, SignatureBasicZeroCopy};
 
 /// Lightweight error type (no string allocations!)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +39,7 @@ pub enum VerifyError {
     // Genesis verification errors
     Ed25519VerificationFailed,
     InvalidGenesisSignature,
+    NoGenesisKeyProvided,
 
     // Parsing/encoding errors
     InvalidUtf8,
@@ -99,15 +101,37 @@ pub fn verify_standard_certificate(
 
     // === PHASE 1: BASIC CHECKS (~5K cycles) ===
     // Fail fast checks that don't require computation
+    //let start = env::cycle_count();
     basic_checks::verify_not_infinite_loop(cert)?;
+    //let end = env::cycle_count();
+    //eprintln!("verify_not_infinite_loop: {}", end - start);
+
+    //let start = env::cycle_count();
     basic_checks::verify_epoch_matches_protocol_message(cert)?;
+    //let end = env::cycle_count();
+    //eprintln!("verify_epoch_matches_protocol_message: {}", end - start);
+
+    //let start = env::cycle_count();
     basic_checks::verify_epoch_chaining(cert, prev_cert)?;
+    //let end = env::cycle_count();
+    //eprintln!("verify_epoch_chaining: {}", end - start);
+
+    //let start = env::cycle_count();
     basic_checks::verify_previous_hash_matches(cert, prev_cert)?;
+    //let end = env::cycle_count();
+    //eprintln!("verify_previous_hash_matches: {}", end - start);
 
     // === PHASE 2: MEDIUM CHECKS (~100K cycles) ===
     // Hash computations
+    //let start = env::cycle_count();
     medium_checks::verify_hash_matches_content(cert)?;
+    //let end = env::cycle_count();
+    //eprintln!("verify_hash_matches_content: {}", end - start);
+
+    //let start = env::cycle_count();
     medium_checks::verify_signed_message_matches_protocol(cert)?;
+    //let end = env::cycle_count();
+    //eprintln!("verify_signed_message_matches_protocol: {}", end - start);
 
     // === PHASE 3: CHAIN VERIFICATION ===
     // AVK and protocol params chaining
@@ -119,13 +143,22 @@ pub fn verify_standard_certificate(
         basic_checks::verify_protocol_params_same_epoch(cert, prev_cert)?;
     } else {
         // Different epoch: check against next_ values from previous cert
+        //let start = env::cycle_count();
         complex_checks::verify_avk_chain(cert, prev_cert)?;
+        //let end = env::cycle_count();
+        //eprintln!("verify_avk_chain: {}", end - start);
+        //let start = env::cycle_count();
         complex_checks::verify_protocol_params_chain(cert, prev_cert)?;
+        //let end = env::cycle_count();
+        //eprintln!("verify_protocol_params_chain: {}", end - start);
     }
 
     // === PHASE 4: BLS MULTI-SIGNATURE VERIFICATION (~23M cycles) ===
     // Most expensive check - only if all above passed!
+    //let start = env::cycle_count();
     complex_checks::verify_bls_multisig(cert)?;
+    //let end = env::cycle_count();
+    //eprintln!("verify_bls_multisig: {}", end - start);
 
     Ok(())
 }
@@ -136,12 +169,16 @@ pub fn verify_standard_certificate(
 pub fn verify_certificate(
     cert: &CertificateZeroCopy,
     prev_cert: Option<&CertificateZeroCopy>,
-    genesis_vk: &[u8; 32],
+    genesis_vk: Option<&[u8; 32]>,
 ) -> Result<(), VerifyError> {
     match &cert.signature {
         SignatureBasicZeroCopy::Genesis { .. } => {
             // Genesis certificate
-            verify_genesis_certificate(cert, genesis_vk)
+            if let Some(genesis_key) = genesis_vk {
+                verify_genesis_certificate(cert, genesis_key)
+            } else {
+                Err(VerifyError::NoGenesisKeyProvided)
+            }
         }
         SignatureBasicZeroCopy::Multi { .. } => {
             // Standard certificate - needs previous certificate
@@ -156,7 +193,7 @@ pub fn verify_certificate(
 /// This matches Mithril's verify_certificate_chain logic
 pub fn verify_certificate_chain(
     certificates: &[CertificateZeroCopy],
-    genesis_vk: &[u8; 32],
+    genesis_vk: Option<&[u8; 32]>,
 ) -> Result<(), VerifyError> {
     if certificates.is_empty() {
         return Ok(());

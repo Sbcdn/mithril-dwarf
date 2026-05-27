@@ -17,7 +17,7 @@ fn bench_original_parser() {
 #[library_benchmark]
 fn bench_zerocopy_parser() {
     let bytes = load_test_data();
-    let result = mithril_dwarf::certificate_from_bytes_fast(black_box(&bytes));
+    let result = mithril_dwarf::certificate_from_bytes(black_box(&bytes));
     black_box(result);
 }
 /*
