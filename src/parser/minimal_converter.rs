@@ -1,3 +1,6 @@
+//! Host-only converter: [`CertificateZeroCopy`] → upstream
+//! `mithril-common::Certificate`.
+
 use crate::parser::{
     AggregateVerificationKeyParsed, CertificateZeroCopy, MetadataBasicZeroCopy, MultiSigParsed,
     ProtocolMessageBasicZeroCopy, SignatureBasicZeroCopy,
@@ -19,8 +22,15 @@ use mithril_stm::{
 };
 use std::collections::BTreeMap;
 
-// Type alias from mithril-stm
 type D = blake2::Blake2b<blake2::digest::consts::U32>;
+
+/// Validate `bytes` as UTF-8 and return the owned `String`. Host-only
+/// path, so the cost of validation doesn't matter; the error
+/// preserves the field name for callers handling adversarial input.
+#[inline]
+fn utf8_field(bytes: Vec<u8>, field: &'static str) -> Result<String, anyhow::Error> {
+    String::from_utf8(bytes).map_err(|e| anyhow!("invalid UTF-8 in {field}: {e}"))
+}
 
 #[inline]
 pub fn certificate_from_zerocopy(basic: CertificateZeroCopy) -> Result<Certificate, anyhow::Error> {
@@ -31,12 +41,12 @@ pub fn certificate_from_zerocopy(basic: CertificateZeroCopy) -> Result<Certifica
     let signature = reconstruct_signature_fast(basic.signature)?;
 
     Ok(Certificate {
-        hash: unsafe { String::from_utf8_unchecked(basic.hash.to_vec()) },
-        previous_hash: unsafe { String::from_utf8_unchecked(basic.previous_hash.to_vec()) },
+        hash: utf8_field(basic.hash.to_vec(), "hash")?,
+        previous_hash: utf8_field(basic.previous_hash.to_vec(), "previous_hash")?,
         epoch: Epoch(basic.epoch),
         metadata,
         protocol_message,
-        signed_message: unsafe { String::from_utf8_unchecked(basic.signed_message.to_vec()) },
+        signed_message: utf8_field(basic.signed_message.to_vec(), "signed_message")?,
         aggregate_verification_key,
         signature,
     })
@@ -65,15 +75,17 @@ fn reconstruct_metadata_fast(
     let signers = basic
         .signers
         .into_iter()
-        .map(|s| StakeDistributionParty {
-            party_id: unsafe { String::from_utf8_unchecked(s.party_id.to_vec()) },
-            stake: s.stake,
+        .map(|s| {
+            Ok::<_, anyhow::Error>(StakeDistributionParty {
+                party_id: utf8_field(s.party_id.to_vec(), "party_id")?,
+                stake: s.stake,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(CertificateMetadata {
-        network: unsafe { String::from_utf8_unchecked(basic.network.to_vec()) },
-        protocol_version: unsafe { String::from_utf8_unchecked(basic.protocol_version.to_vec()) },
+        network: utf8_field(basic.network.to_vec(), "network")?,
+        protocol_version: utf8_field(basic.protocol_version.to_vec(), "protocol_version")?,
         protocol_parameters,
         initiated_at,
         sealed_at,
@@ -89,7 +101,7 @@ fn reconstruct_protocol_message_fast(
 
     for (key_discriminant, value) in basic.parts {
         let key = protocol_message_key_from_discriminant(key_discriminant)?;
-        let value_string = unsafe { String::from_utf8_unchecked(value.to_vec()) };
+        let value_string = utf8_field(value.to_vec(), "protocol_message_value")?;
         message_parts.insert(key, value_string);
     }
 
@@ -123,66 +135,41 @@ fn reconstruct_aggregate_verification_key(
 
     type D = Blake2b<U32>;
 
-    // Reconstruct MerkleTreeBatchCommitment
     let mt_commitment = MerkleTreeBatchCommitment::<D>::new(
-        parsed.root.to_vec(), // Must allocate for the commitment
+        parsed.root.to_vec(),
         parsed.nr_leaves as usize,
     );
-
-    // Reconstruct AggregateVerificationKey using the new constructor
     let avk = AggregateVerificationKey::<D>::new(mt_commitment, parsed.total_stake);
-
-    // Wrap in ProtocolKey
     Ok(ProtocolKey::new(avk))
 }
 
-/// Reconstruct ProtocolMultiSignature from parsed zero-copy data
 #[inline]
 fn reconstruct_multi_signature(
     parsed: MultiSigParsed,
 ) -> Result<ProtocolMultiSignature, anyhow::Error> {
-    // Reconstruct signatures vector
     let mut signatures = Vec::with_capacity(parsed.signatures.len());
 
     for sig_parsed in parsed.signatures {
-        // Deserialize BLS signature from compressed G1 point (48 bytes)
         let sigma = BlsSignature::from_bytes(sig_parsed.sigma_bytes).map_err(|_| {
-            anyhow!(
-                "Failed to deserialize BLS signature from {} bytes",
-                sig_parsed.sigma_bytes.len()
-            )
+            anyhow!("BLS signature from {} bytes", sig_parsed.sigma_bytes.len())
         })?;
-
-        // Deserialize BLS verification key from compressed G2 point (96 bytes)
         let vk = BlsVerificationKey::from_bytes(sig_parsed.vk_bytes).map_err(|_| {
-            anyhow!(
-                "Failed to deserialize BLS verification key from {} bytes",
-                sig_parsed.vk_bytes.len()
-            )
+            anyhow!("BLS verification key from {} bytes", sig_parsed.vk_bytes.len())
         })?;
 
-        // Create SingleSignature
+        // Materialise the borrowed index slice into a Vec at the host boundary.
         let sig = SingleSignature {
             sigma,
-            indexes: sig_parsed.indexes,
+            indexes: sig_parsed.indexes().collect(),
             signer_index: sig_parsed.signer_index,
         };
-
-        // Create RegisteredParty (which is MerkleTreeLeaf)
         let reg_party = MerkleTreeLeaf(vk, sig_parsed.stake);
-
-        // Create SingleSignatureWithRegisteredParty
         signatures.push(SingleSignatureWithRegisteredParty { sig, reg_party });
     }
 
-    // Reconstruct batch proof from bytes
     let batch_proof = MerkleBatchPath::<D>::from_bytes(parsed.batch_proof_bytes)
-        .map_err(|e| anyhow!("Failed to deserialize batch proof: {:?}", e))?;
-
-    // Create AggregateSignature using the new constructor
+        .map_err(|e| anyhow!("batch proof: {:?}", e))?;
     let aggregate_sig = AggregateSignature::<D>::new(signatures, batch_proof);
-
-    // Wrap in ProtocolMultiSignature (which is ProtocolKey<AggregateSignature<D>>)
     Ok(ProtocolKey::new(aggregate_sig))
 }
 
@@ -194,15 +181,13 @@ fn reconstruct_signature_fast(
         SignatureBasicZeroCopy::Genesis { signature_bytes } => {
             if signature_bytes.len() != 64 {
                 return Err(anyhow!(
-                    "Invalid Ed25519 signature length: {}",
+                    "Ed25519 signature length: {}",
                     signature_bytes.len()
                 ));
             }
-
             let sig_array: [u8; 64] = signature_bytes
                 .try_into()
-                .map_err(|_| anyhow!("Signature conversion failed"))?;
-
+                .map_err(|_| anyhow!("signature conversion"))?;
             let signature = ed25519_dalek::Signature::from_bytes(&sig_array);
             Ok(CertificateSignature::GenesisSignature(ProtocolKey::new(
                 signature,
@@ -211,45 +196,40 @@ fn reconstruct_signature_fast(
         SignatureBasicZeroCopy::Multi {
             entity_type_discriminant,
             entity_type_data,
-            signature, // MultiSigParsed
+            signature,
         } => {
             let entity_type =
                 reconstruct_signed_entity_type(entity_type_discriminant, entity_type_data)?;
-
-            // Reconstruct ProtocolMultiSignature from parsed data
             let multi_sig = reconstruct_multi_signature(signature)?;
-
             Ok(CertificateSignature::MultiSignature(entity_type, multi_sig))
         }
     }
 }
 
+/// Rebuild the upstream `SignedEntityType` from the discriminant and
+/// the fixed `[u64; 2]` slots produced by `read_entity_type_data_fast`.
 #[inline]
 fn reconstruct_signed_entity_type(
     discriminant: u8,
-    data: Vec<u64>,
+    data: [u64; 2],
 ) -> Result<SignedEntityType, anyhow::Error> {
     match discriminant {
-        0 if data.len() == 1 => Ok(SignedEntityType::MithrilStakeDistribution(Epoch(data[0]))),
-        1 if data.len() == 1 => Ok(SignedEntityType::CardanoStakeDistribution(Epoch(data[0]))),
-        2 if data.len() == 2 => Ok(SignedEntityType::CardanoImmutableFilesFull(
+        0 => Ok(SignedEntityType::MithrilStakeDistribution(Epoch(data[0]))),
+        1 => Ok(SignedEntityType::CardanoStakeDistribution(Epoch(data[0]))),
+        2 => Ok(SignedEntityType::CardanoImmutableFilesFull(
             CardanoDbBeacon {
                 epoch: Epoch(data[0]),
                 immutable_file_number: data[1],
             },
         )),
-        3 if data.len() == 2 => Ok(SignedEntityType::CardanoDatabase(CardanoDbBeacon {
+        3 => Ok(SignedEntityType::CardanoDatabase(CardanoDbBeacon {
             epoch: Epoch(data[0]),
             immutable_file_number: data[1],
         })),
-        4 if data.len() == 2 => Ok(SignedEntityType::CardanoTransactions(
+        4 => Ok(SignedEntityType::CardanoTransactions(
             Epoch(data[0]),
             BlockNumber(data[1]),
         )),
-        _ => Err(anyhow!(
-            "Invalid entity type: {} with {} elements",
-            discriminant,
-            data.len()
-        )),
+        _ => Err(anyhow!("entity type discriminant: {discriminant}")),
     }
 }

@@ -16,7 +16,7 @@ fn load_test_prev_cert() -> Vec<u8> {
     hex::decode(PREV_CERT_BYTES).unwrap()
 }
 
-// === PHASE 1: BASIC CHECKS ===
+// Phase 1: basic checks.
 
 #[library_benchmark]
 fn bench_verify_not_infinite_loop() {
@@ -70,7 +70,7 @@ fn bench_all_basic_checks() {
     black_box(result);
 }
 
-// === PHASE 2: MEDIUM CHECKS ===
+// Phase 2: medium checks.
 
 #[library_benchmark]
 fn bench_verify_hash_matches() {
@@ -99,7 +99,7 @@ fn bench_all_medium_checks() {
     black_box(result);
 }
 
-// === PHASE 3: CHAIN VERIFICATION ===
+// Phase 3: chain verification.
 
 #[library_benchmark]
 fn bench_verify_avk_chain() {
@@ -124,7 +124,7 @@ fn bench_verify_protocol_params_chain() {
     black_box(result);
 }
 
-// === PHASE 4: BLS VERIFICATION ===
+// Phase 4: BLS multi-signature.
 
 #[library_benchmark]
 fn bench_verify_bls_multisig() {
@@ -135,7 +135,7 @@ fn bench_verify_bls_multisig() {
     black_box(result);
 }
 
-// === FULL VERIFICATION ===
+// Top-level verifier.
 
 #[library_benchmark]
 fn bench_full_standard_verification() {

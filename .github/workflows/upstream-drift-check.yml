@@ -1,0 +1,155 @@
+name: Upstream Mithril Drift Check
+
+# Weekly + on-demand check: rebuild the equivalence harness against
+# the LATEST upstream Mithril (Sbcdn/mithril.git#main) instead of the
+# pinned rev (36fd7f8818f0ff14b10336fa7f855d52698e40a8). Any test
+# failure here means upstream has diverged in a way our pinned-rev
+# harness would not have caught.
+#
+# What this catches:
+#   * Silent semantic changes upstream (e.g., a new check added to
+#     verify_standard_certificate, a feed_hash byte-sequence change,
+#     a discriminant reorder)
+#   * Changes to dependencies (sha2, blake2, ed25519-dalek, blst) that
+#     transitively change Mithril's behaviour
+#   * Breaking type changes that prevent the harness compiling
+#
+# What this does NOT catch:
+#   * Production-time drift if the dwarf consumer (oaks_cert) pins a
+#     different upstream rev than we do
+#   * Drift in non-Mithril dependencies the harness uses (we re-pin
+#     ed25519-dalek and blake2 in the harness Cargo.toml)
+#
+# When this fails, the investigation path is:
+#   1. Read the diff between the pinned rev and current upstream main:
+#        git log 36fd7f88..main mithril-common mithril-stm mithril-client
+#   2. Identify which test failed (per-cert byte equality, mutation
+#      verdict, pin test).
+#   3. Determine whether the upstream change should be reflected in:
+#        a. A divergence registry entry update
+#        b. A dwarf code change to match the new upstream behaviour
+#        c. A test update (e.g., new pin for a new enum variant)
+#   4. Bump the pinned rev in both Cargo.toml files once resolved.
+
+on:
+  schedule:
+    # Mondays at 06:00 UTC — captures changes from the previous week
+    # without spamming the CI runner.
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
+  # Also runnable in pull-requests that modify the pinned rev — gives
+  # a sanity check before bumping.
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'mithril-dwarf-harness/Cargo.toml'
+      - '.github/workflows/upstream-drift-check.yml'
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+    # Per-step `continue-on-error` (below) lets the report step run after
+    # build/test failures so the diagnostic is emitted. The report step
+    # itself uses `exit 1` on real drift — that must surface as a job
+    # failure (red check, cron notification, branch-protection signal),
+    # so we do NOT set `continue-on-error` at job level.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-drift-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-drift-cargo-
+
+      - name: Apply upstream-main override patch
+        run: |
+          # Append a [patch.<repo>] section to the WORKSPACE Cargo.toml
+          # that overrides the pinned rev with the current main branch.
+          # Patch applies to all workspace members.
+          cat >> Cargo.toml <<'EOF'
+
+          # === DRIFT CHECK (CI only — DO NOT COMMIT) ===
+          # Overrides the pinned-rev upstream Mithril deps to track
+          # the current `main` branch. Any equivalence-harness test
+          # failure here indicates upstream has changed in a way our
+          # pinned-rev harness would not have caught.
+          [patch."https://github.com/Sbcdn/mithril.git"]
+          mithril-common = { git = "https://github.com/Sbcdn/mithril.git", branch = "main" }
+          mithril-client = { git = "https://github.com/Sbcdn/mithril.git", branch = "main" }
+          mithril-stm = { git = "https://github.com/Sbcdn/mithril.git", branch = "main" }
+          EOF
+          echo "Patched Cargo.toml:"
+          tail -15 Cargo.toml
+
+      - name: Update Cargo.lock to fetch upstream main
+        run: |
+          cargo update -p mithril-common -p mithril-client -p mithril-stm || true
+          echo "Resolved versions:"
+          cargo tree -p mithril-dwarf-harness 2>&1 | grep -E "mithril-(common|client|stm)" | head -10 || true
+
+      - name: Build harness against upstream main
+        id: build
+        run: cargo build -p mithril-dwarf-harness --release --tests 2>&1
+        continue-on-error: true
+
+      - name: Run equivalence harness against upstream main
+        id: harness
+        if: steps.build.outcome == 'success'
+        run: cargo test -p mithril-dwarf-harness --release 2>&1
+        continue-on-error: true
+
+      - name: Run intentional-divergence registry against upstream main
+        id: divergences
+        if: steps.build.outcome == 'success'
+        run: cargo test -p mithril-dwarf-harness --release --test intentional_divergences 2>&1
+        continue-on-error: true
+
+      - name: Report drift status
+        if: always()
+        run: |
+          BUILD=${{ steps.build.outcome }}
+          HARNESS=${{ steps.harness.outcome }}
+          DIVERGENCES=${{ steps.divergences.outcome }}
+
+          echo "=== Upstream Drift Check Report ==="
+          echo "Build:           $BUILD"
+          echo "Equivalence:     $HARNESS"
+          echo "Divergence pin:  $DIVERGENCES"
+
+          if [ "$BUILD" != "success" ]; then
+            echo
+            echo "BUILD FAILURE: upstream has type-level breaking changes."
+            echo "   The pinned-rev harness will not catch these until rev bump."
+            exit 1
+          fi
+
+          if [ "$HARNESS" != "success" ] || [ "$DIVERGENCES" != "success" ]; then
+            echo
+            echo "DRIFT DETECTED: upstream behaviour differs from pinned rev."
+            echo "   Pinned: 36fd7f8818f0ff14b10336fa7f855d52698e40a8"
+            echo
+            echo "   Investigation path:"
+            echo "   1. Compare upstream commits:"
+            echo "      git log 36fd7f88..main mithril-common mithril-stm mithril-client"
+            echo "   2. Determine the failure class:"
+            echo "      a. divergence-registry entry needs update"
+            echo "      b. dwarf code needs to track upstream change"
+            echo "      c. new pin test needed for new variant/discriminant"
+            echo "   3. Bump pinned rev in Cargo.toml files once resolved."
+            exit 1
+          fi
+
+          echo
+          echo "No drift: upstream main is bit-equivalent to pinned rev."

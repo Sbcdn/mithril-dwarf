@@ -6,15 +6,17 @@ use mithril_common::certificate_chain::{CertificateVerifier, MithrilCertificateV
 use mithril_common::entities::Certificate;
 use mithril_common::messages::CertificateMessage;
 use mithril_dwarf::{
-    certificate_from_bytes, certificate_to_bytes_opt,
+    certificate_from_bytes, certificate_to_bytes,
     certificate_verification::verify_standard_certificate,
 };
 use once_cell::sync::Lazy;
 use std::sync::Arc;
 
 // Load test certificates at compile time
-static MITHRIL_CERT_BYTES: &[u8] = include_bytes!("../tests/test_data/mithril_current.bin");
-static MITHRIL_PREV_BYTES: &[u8] = include_bytes!("../tests/test_data/mithril_previous.bin");
+static MITHRIL_CERT_BYTES: &[u8] =
+    include_bytes!("../mithril-dwarf-harness/tests/test_data/mithril_current.bin");
+static MITHRIL_PREV_BYTES: &[u8] =
+    include_bytes!("../mithril-dwarf-harness/tests/test_data/mithril_previous.bin");
 
 // Parse certificates once at startup
 static MITHRIL_CERTS: Lazy<(Certificate, Certificate)> = Lazy::new(|| {
@@ -24,13 +26,11 @@ static MITHRIL_CERTS: Lazy<(Certificate, Certificate)> = Lazy::new(|| {
 });
 
 // Pre-serialize to dwarf format
-static DWARF_CERT_BYTES: Lazy<Vec<u8>> = Lazy::new(|| certificate_to_bytes_opt(&MITHRIL_CERTS.0));
+static DWARF_CERT_BYTES: Lazy<Vec<u8>> = Lazy::new(|| certificate_to_bytes(&MITHRIL_CERTS.0));
 
-static DWARF_PREV_BYTES: Lazy<Vec<u8>> = Lazy::new(|| certificate_to_bytes_opt(&MITHRIL_CERTS.1));
+static DWARF_PREV_BYTES: Lazy<Vec<u8>> = Lazy::new(|| certificate_to_bytes(&MITHRIL_CERTS.1));
 
-// ============================================================================
 // MITHRIL ORIGINAL BENCHMARKS
-// ============================================================================
 
 #[library_benchmark]
 fn bench_mithril_full_verification() {
@@ -59,9 +59,7 @@ fn bench_mithril_parsing() {
     std::hint::black_box((cert, prev));
 }
 
-// ============================================================================
 // DWARF BENCHMARKS
-// ============================================================================
 
 #[library_benchmark]
 fn bench_dwarf_full_verification() {
@@ -81,9 +79,7 @@ fn bench_dwarf_parsing() {
     std::hint::black_box((cert, prev));
 }
 
-// ============================================================================
 // PHASE BENCHMARKS (Dwarf only - shows verification breakdown)
-// ============================================================================
 
 #[library_benchmark]
 fn bench_dwarf_basic_checks() {
@@ -140,9 +136,7 @@ fn bench_dwarf_bls_only() {
     std::hint::black_box(result);
 }
 
-// ============================================================================
 // HELPER
-// ============================================================================
 
 use async_trait::async_trait;
 use mithril_common::certificate_chain::{CertificateRetriever, CertificateRetrieverError};
@@ -167,9 +161,7 @@ fn create_mock_retriever(prev_cert: &Certificate) -> MockRetriever {
     }
 }
 
-// ============================================================================
 // BENCHMARK GROUPS
-// ============================================================================
 
 library_benchmark_group!(
     name = mithril_benches;

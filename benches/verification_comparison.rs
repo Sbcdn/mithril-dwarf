@@ -11,7 +11,7 @@ use once_cell::sync::Lazy;
 use std::hint::black_box;
 use std::sync::Arc;
 
-// === COMPILE-TIME CONSTANTS (zero runtime cost!) ===
+// Pre-bundled certificate fixtures embedded at compile time.
 
 static OUR_CERT_BYTES: &[u8] = include_bytes!("data/cert_current.bin");
 static OUR_PREV_BYTES: &[u8] = include_bytes!("data/cert_previous.bin");
@@ -25,7 +25,7 @@ static MITHRIL_CERTS: Lazy<(Certificate, Certificate)> = Lazy::new(|| {
     (cert.try_into().unwrap(), prev.try_into().unwrap())
 });
 
-// === MITHRIL ORIGINAL BENCHMARKS ===
+// Upstream Mithril verifier benchmarks.
 
 #[library_benchmark]
 fn bench_mithril_parsing_only() {
@@ -49,12 +49,11 @@ fn bench_mithril_verification_debug() {
         .unwrap()
         .block_on(async { verifier.verify_standard_certificate(cert, prev).await });
 
-    // CHECK THE RESULT!
     match result {
-        Ok(_) => eprintln!("✅ Verification passed"),
+        Ok(_) => eprintln!("verification passed"),
         Err(e) => {
-            eprintln!("❌ Verification failed: {:?}", e);
-            panic!("Verification error: {:?}", e);
+            eprintln!("verification failed: {:?}", e);
+            panic!("verification error: {:?}", e);
         }
     }
 
@@ -124,7 +123,7 @@ fn bench_mithril_bls_only() {
     }
 }
 
-// === OUR OPTIMIZED BENCHMARKS ===
+// mithril-dwarf verifier benchmarks.
 
 #[library_benchmark]
 fn bench_our_parsing_only() {
@@ -204,7 +203,7 @@ fn bench_our_bls_only() {
     black_box(result);
 }
 
-// === INDIVIDUAL CHECK BENCHMARKS (for detailed profiling) ===
+// Per-check benchmarks for profiling.
 
 #[library_benchmark]
 fn bench_check_infinite_loop() {
@@ -282,7 +281,7 @@ fn bench_check_protocol_params() {
     black_box(result);
 }
 
-// === HELPER ===
+// Mock retriever for the upstream verifier.
 
 use async_trait::async_trait;
 use mithril_common::certificate_chain::{CertificateRetriever, CertificateRetrieverError};
@@ -307,7 +306,7 @@ fn create_mock_retriever(prev_cert: &Certificate) -> MockRetriever {
     }
 }
 
-// === BENCHMARK GROUPS ===
+// Benchmark groups.
 
 library_benchmark_group!(
     name = mithril_original;

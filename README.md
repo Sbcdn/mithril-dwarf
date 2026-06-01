@@ -1,42 +1,25 @@
 # mithril-dwarf
 
-A cycle-optimized, allocation-free Mithril certificate verifier in Rust — small enough to live inside a zkVM guest, faithful enough to accept the same chains a stock Mithril client would.
-
-The name fits the role: **dwarf**, because the goal is to compress a piece of Mithril verification into the smallest, densest, most cycle-frugal shape that still produces a bit-identical answer.
-
----
+A cycle-optimized, allocation-free Cardano Mithril certificate verifier in Rust. Primary target: zkVM guests ([RISC Zero](https://risczero.com)). Verdicts are bit-equivalent to `mithril-common`'s `MithrilCertificateVerifier` and gated by an equivalence harness.
 
 ## At a glance
 
-- Re-implementation of Mithril's certificate-chain verification logic, written from scratch against the binary layer rather than via `serde`/`mithril-common`.
-- Designed for **zkVM guests** (primary target: [RISC Zero](https://risczero.com)) and other compute-constrained environments where every cycle and every heap allocation costs.
-- **Bit-identical to upstream** — every intermediate hash, lottery outcome, AVK transition and BLS aggregate is checked against `mithril-common`'s `MithrilCertificateVerifier` in the equivalence harness.
-- Custom **zero-copy wire format** for certificates: a `CertificateZeroCopy` is just typed views into a `&[u8]`. No heap, no `serde`, no JSON parser on the hot path.
-- Verification is **tiered cheapest-first** so invalid chains fail in the comparison phase, before any cryptography runs.
+- Re-implementation of Mithril chain verification against the binary layer, no `serde` or canonical-JSON on the hot path.
+- Custom zero-copy wire format: `CertificateZeroCopy<'a>` holds slice references into the source `&[u8]`.
+- Tiered cheapest-first: invalid chains fail in `O(1)` comparisons before any cryptography runs.
+- Bit-equivalent to upstream Mithril at pinned rev `36fd7f88` — verified per check and at the top level for every corpus cert and every mutation.
 
----
+## Background
 
-## Background: what's being verified?
+[Mithril](https://mithril.network/) is a stake-based threshold multi-signature protocol on Cardano. Stake pool operators sign individual messages, an aggregator combines them into a single multi-signature once enough stake has weighed in, and the result is a Mithril certificate attesting to some piece of Cardano state. Certificates are chained: each non-genesis cert is verified against the AVK certified in the previous epoch, and the chain terminates at a genesis cert signed with an Ed25519 key baked into the network's bootstrap.
 
-[Mithril](https://mithril.network/) is a stake-based threshold multi-signature protocol layered on Cardano. Stake pool operators (SPOs) act as **signers**; an **aggregator** collects their individual signatures and combines them into a single multi-signature once enough stake has weighed in. The artifact that comes out the other end is a **Mithril certificate** — a small, signed object that attests to some piece of Cardano state (a database snapshot digest, a stake distribution, a transaction-set commitment, etc.).
-
-Certificates are **chained**. Each non-genesis certificate is verified using the aggregate verification key (AVK) that was certified in the previous epoch, and the chain terminates at a **genesis certificate** signed with an Ed25519 key baked into the network's bootstrap parameters. A client that wants to trust an artifact walks the chain backward to genesis, verifying every link.
-
-That walk is what `mithril-dwarf` does — just faster and leaner.
-
-### Why care about cycles?
-
-Inside a zkVM, "cycles" are the proving cost. Verifying a Mithril chain with the stock `mithril-client` is correct but expensive: generic crypto crates, heap-heavy `serde` deserialization, and canonical-JSON hashing all multiply the cycle count, and cycle count maps approximately linearly to proving time and dollars. A purpose-built verifier is the difference between "it proves" and "it proves cheaply enough to ship."
-
-The same properties — small static binary, no allocator, predictable cost — make the crate friendly for embedded and bare-metal use cases too, even if RISC Zero is the named target.
-
----
+Inside a zkVM, every cycle in this chain walk is proving cost. Generic crypto crates, heap-heavy `serde` deserialization, and canonical-JSON hashing multiply that cost. `mithril-dwarf` is a purpose-built verifier sized for that constraint.
 
 ## Architecture
 
 ```
 src/
-├── parser/                       zero-copy binary deserializer
+├── parser/
 │   ├── byte_deserializer.rs      FastByteParser + CertificateZeroCopy views
 │   ├── byte_serializer.rs        (host-only) Certificate → bytes
 │   └── minimal_converter.rs      (host-only) bridges to mithril-common types
@@ -44,12 +27,11 @@ src/
     ├── mod.rs                    verify_certificate{,_chain,_genesis,_standard}
     ├── basic_checks.rs           Phase 1 — comparisons
     ├── medium_checks.rs          Phase 2 — SHA-256 over canonical bytes
-    └── complex_checks.rs         Phases 3–4 — BLS, Merkle proofs, lottery
+    ├── complex_checks.rs         Phases 3–4 — BLS, Merkle, lottery
+    └── hash_sink.rs              streaming SHA-256 sink trait
 ```
 
-### The parser
-
-[src/parser/byte_deserializer.rs](src/parser/byte_deserializer.rs) defines a custom binary representation of a Mithril certificate and a hand-rolled `FastByteParser` that walks it without allocating. The output, `CertificateZeroCopy<'a>`, holds slice references into the original `&[u8]` — VK arrays, signature bytes, Merkle tree leaves, and so on are all borrowed, never copied. The signature variant is captured as an enum so genesis (Ed25519) and standard (BLS aggregate) certificates can be discriminated without re-parsing:
+[`byte_deserializer.rs`](src/parser/byte_deserializer.rs) defines the binary wire format and a hand-rolled `FastByteParser`. `CertificateZeroCopy<'a>` borrows every field — VK arrays, signature bytes, Merkle leaves — from the source buffer:
 
 ```rust
 pub enum SignatureBasicZeroCopy<'a> {
@@ -58,29 +40,24 @@ pub enum SignatureBasicZeroCopy<'a> {
 }
 ```
 
-The host-only `byte_serializer.rs` and `minimal_converter.rs` exist purely to convert from `mithril-common`'s `CertificateMessage` into this binary format — they're how real chains pulled from an aggregator get fed to the guest.
+The host-only `byte_serializer.rs` and `minimal_converter.rs` bridge from upstream's `CertificateMessage` into this format so chains pulled from an aggregator can feed the guest.
 
-### The verification tiers
+### Verification phases
 
-`verify_standard_certificate` in [src/certificate_verification/mod.rs:92](src/certificate_verification/mod.rs#L92) is structured as four phases ordered by cost. Each phase only runs if the cheaper phases passed:
+[`verify_standard_certificate`](src/certificate_verification/mod.rs#L85) runs four phases in increasing cost order; each runs only if the cheaper phases passed.
 
 | Phase | What it proves |
 |------:|----------------|
-| 1. Basic checks    | Hash isn't pointing at itself; epoch matches the protocol message; epoch chains correctly (`E` or `E+1`); `previous_hash` links to `prev_cert`. |
-| 2. Medium checks   | `certificate_hash` matches a recomputation of the hash; `signed_message == SHA256(protocol_message)` (the next AVK is itself one of the protocol-message parts). SHA-256 runs over hand-built canonical bytes — no `serde_json`. |
-| 3. Chain checks    | Same epoch ⇒ AVK and protocol params must match exactly; epoch boundary ⇒ they must match the `next_*` fields carried in the previous certificate. |
-| 4. BLS multi-sig   | Aggregate BLS verification via `blst`, Merkle batch proof via Blake2b, lottery check via Taylor-series `ln(1 - φ_f)` over rational arithmetic. |
+| 1. Basic    | No self-chaining; epoch matches the protocol message; epoch chains (`E` or `E+1`); `previous_hash` links to `prev_cert`. |
+| 2. Medium   | `certificate_hash` matches a recomputation; `signed_message == SHA256(protocol_message)`. Canonical bytes are hand-built; no `serde_json`. |
+| 3. Chain    | Same-epoch: AVK and protocol params must match exactly. Cross-epoch: must match the `next_*` parts carried by the previous cert. |
+| 4. BLS      | Aggregate BLS via `blst`; Merkle batch proof via Blake2b; lottery via Taylor-series `ln(1 − φ_f)` over rational arithmetic. |
 
-Two design choices are worth flagging:
-
-- **Lightweight error type.** [`VerifyError`](src/certificate_verification/mod.rs#L13) is a `Copy` enum that fits in 4 bytes (tested explicitly). No string allocation on failure paths — failure reasons survive the trip back from a guest without dragging a heap with them.
-- **Cached lottery math.** `ln(1 - φ_f)` is the same for every certificate with the same protocol params, so the result is cached per-φ_f. Combined with rational arithmetic via the [`crypto-ratio`](https://crates.io/crates/crypto-ratio) crate (rather than `num-bigint`), the lottery check is the largest single source of speedup vs. the upstream reference path.
-
----
+[`VerifyError`](src/certificate_verification/mod.rs#L14) is a 4-byte `Copy` enum (pinned by a unit test); failure paths allocate nothing. `ln(1 − φ_f)` is hoisted once per cert; the per-signer `x = −w · c` is hoisted per signer; lottery and Merkle work are the dominant cycle bucket and the focus of the optimization work.
 
 ## Public API
 
-The crate's surface is small. From [src/lib.rs](src/lib.rs):
+From [`src/lib.rs`](src/lib.rs):
 
 ```rust
 pub use certificate_verification::{
@@ -92,99 +69,95 @@ pub use certificate_verification::{
 pub use parser::{CertificateZeroCopy, certificate_from_bytes};
 ```
 
-A minimal guest-side example:
+Minimal guest-side example:
 
 ```rust
 use mithril_dwarf::{certificate_from_bytes, verify_certificate_chain};
 
-// `chain_bytes` is a Vec<&[u8]>, newest certificate first.
-// `genesis_vk` is the 32-byte Ed25519 verification key for the target network.
-fn verify(chain_bytes: &[&[u8]], genesis_vk: &[u8; 32]) -> Result<(), mithril_dwarf::certificate_verification::VerifyError> {
+fn verify(chain_bytes: &[&[u8]], genesis_vk: &[u8; 32])
+    -> Result<(), mithril_dwarf::certificate_verification::VerifyError>
+{
     let parsed: Vec<_> = chain_bytes
         .iter()
         .map(|b| certificate_from_bytes(b))
         .collect::<Result<_, _>>()
         .expect("malformed certificate bytes");
-
     verify_certificate_chain(&parsed, Some(genesis_vk))
 }
 ```
 
-On the host side (with the `host` feature enabled), `certificate_to_bytes` and the converter module in [src/parser/](src/parser/) let you turn a `mithril-common` `Certificate` into the bytes the guest expects.
-
----
+With the `host` feature enabled, `certificate_to_bytes` and `minimal_converter` turn an upstream `Certificate` into the bytes the guest expects.
 
 ## Feature flags
 
-The default build is intentionally lean so the guest binary stays small. Heavyweight dependencies are opt-in.
+| Feature   | Pulls in | When to enable |
+|-----------|----------|----------------|
+| *(default)* | `blake2`, `blst`, `sha2`, `ed25519-dalek`, `risc0-zkvm`, `crypto-ratio`, `fixed` | Guest verifier; this is what you compile into the RISC0 ELF. |
+| `host`    | `mithril-client`, `mithril-common`, `mithril-stm`, `anyhow` | Host glue: aggregator fetch, wire serialization, converter. |
 
-| Feature   | Pulls in | When to enable it |
-|-----------|----------|-------------------|
-| *(default)* | `blake2`, `blst`, `sha2`, `ed25519-dalek`, `risc0-zkvm`, `crypto-ratio`, `fixed` | The guest-only verifier. This is what you compile into your RISC0 ELF. |
-| `host`    | `mithril-client`, `mithril-common`, `mithril-stm`, `anyhow` | Host-side glue: fetching real certificates from an aggregator, serializing them to the wire format, running the converters. |
-| `tests`   | `host` + `reqwest`, `tokio`, `clap`, `serde`, `serde_json`, `bincode`, `slog` | Required for the `fetch_certificates` binary and the equivalence test harness. |
-
-> **Note.** The `host` feature pulls Mithril from a tracked fork: `Sbcdn/mithril.git@mithril_risc0`. The fork exists to expose `num-integer-backend` and ed25519/blst version pinning needed for the RISC Zero precompiles. See [Status](#status) below.
-
----
+The `host` feature tracks Mithril at a frozen rev on `Sbcdn/mithril.git` carrying `num-integer-backend` and crypto-version pins needed for clean RISC0 builds.
 
 ## Fetching real chains
 
-The `fetch_certificates` binary walks an aggregator backward from a given certificate hash to genesis and serializes each certificate as a `bincode` file under `tests/test_data/certificates/` (or wherever `--output-dir` points). It also emits a JSON metadata file with the network, genesis key, and chain stats. This is how the equivalence-test corpus is built.
+The `fetch_certificates` binary lives in [`mithril-dwarf-harness`](mithril-dwarf-harness/), walks an aggregator from a given hash back to genesis, and serializes each cert as a `bincode` file under `tests/test_data/certificates/`.
 
 ```bash
-# Pull a mainnet chain
-cargo run -F tests --bin fetch_certificates -- \
+cargo run -p mithril-dwarf-harness --bin fetch_certificates -- \
     --network mainnet \
     --certificate-hash 0b1ad46fd90bad9a8b52595c444e722fe8b0a883e1943f144481afc947ab369c
 
-# Same on preprod, with a custom output directory
-cargo run -F tests --bin fetch_certificates -- \
+# Custom output directory, depth cap, alternate network:
+cargo run -p mithril-dwarf-harness --bin fetch_certificates -- \
     --network preprod \
     --certificate-hash <hash> \
-    --output-dir tests/test_data/preprod_certificates
-
-# Limit how far back the walk goes
-cargo run -F tests --bin fetch_certificates -- \
-    --network mainnet \
-    --certificate-hash <hash> \
+    --output-dir mithril-dwarf-harness/tests/test_data/preprod_certificates \
     --max-certificates 50
 ```
 
-Supported networks are `mainnet`, `preprod`, and `preview`; aggregator URLs and genesis keys for each are baked into the binary.
+Supported networks: `mainnet`, `preprod`, `preview`. Aggregator URLs and genesis keys are baked into the binary. The diverse-corpus fetcher script at [`tests/test_data/fetch_diverse_corpus.sh`](mithril-dwarf-harness/tests/test_data/fetch_diverse_corpus.sh) pulls one chain per `SignedEntityType` variant plus a preprod chain — this is the shape the equivalence harness expects.
 
----
+## Equivalence harness
 
-## Equivalence testing
+The [`mithril-dwarf-harness`](mithril-dwarf-harness/) sub-crate is the ship gate. For every cert in the corpus it:
 
-The correctness story is held together by `tests/equivalence_tests.rs`. For every certificate in the test corpus, the harness:
+1. Runs every upstream check and records the canonical bytes.
+2. Runs the matching dwarf check and records the canonical bytes.
+3. Bitwise-compares per check, then bitwise-compares the top-level verdict.
+4. Re-runs the same comparison against a mutation suite (~25 axes × N corpus certs) covering hashes, signature/AVK envelopes, epochs, protocol params, signer stake, `NextAvk` / `NextProtocolParameters` JSON, and BLS-algebraic mutations.
 
-1. Loads the original `CertificateMessage` from disk.
-2. Runs upstream `mithril-common`'s `MithrilCertificateVerifier`, capturing every intermediate value the implementation can hand back (signed message, hash, AVK transitions, lottery results, batch-proof outcomes).
-3. Converts the same certificate into the zero-copy wire format and runs `mithril-dwarf`'s verifier.
-4. Asserts the two implementations agree at every step — not just the final pass/fail, but each intermediate computation.
+Hard-failure cases (the harness exits non-zero):
 
-> **First-time setup:** the test corpus under `tests/test_data/certificates/` is not committed. Populate it with the [`fetch_certificates`](#fetching-real-chains) binary before running the suite.
+- **Critical** — upstream rejected, dwarf accepted (false positive; attacker-craftable).
+- **Soundness regression** — dwarf rejected, upstream accepted.
+- **Mutation insufficient** — both accepted; the mutation isn't actually adversarial.
+
+Both impls rejecting with different `ErrorCategory` values is a **soft divergence** — surfaced in the report but verdict-equivalent.
+
+A separate byte-level fuzz test mutates the raw dwarf wire bytes (no upstream gatekeeper) and asserts dwarf rejects, modelling the in-guest threat shape.
 
 ```bash
-cargo test -F tests --test equivalence_tests
+cargo test -p mithril-dwarf-harness --test equivalence
+cargo test -p mithril-dwarf-harness --test intentional_divergences
+cargo run  -p mithril-dwarf-harness --bin audit
 ```
 
-If you change anything in `certificate_verification/` or `parser/`, this is the suite that decides whether the change preserves the chain semantics. Any divergence — a different hash, a different lottery outcome, a different rejection reason — is a failure.
+[benches/](benches/) carries iai-callgrind benchmarks for per-check cycle cost and side-by-side comparison against the reference path.
 
-The supporting benchmarks live in [benches/](benches/) and cover parsing, per-check cycle costs, and side-by-side performance against the reference path.
+### Intentional divergences
 
----
+Five places where dwarf's observable behaviour differs from upstream (e.g. ed25519 `verify` vs `verify_strict`, BLS identity rejected at pairing time rather than at deserialise, asymmetric epoch-chaining) are documented and pin-tested in [`tests/intentional_divergences.rs`](mithril-dwarf-harness/tests/intentional_divergences.rs). Each is verdict-equivalent on real chains; a corpus-wide gate catches any future change that breaks that equivalence.
+
+### Upstream drift CI
+
+[`.github/workflows/upstream-drift-check.yml`](.github/workflows/upstream-drift-check.yml) rebuilds the harness weekly against `Sbcdn/mithril.git#main` instead of the pinned rev. Any divergence in behaviour or type signatures fails the job and signals that the pin needs revisiting. The same check is runnable locally via [`scripts/check-upstream-drift.sh`](scripts/check-upstream-drift.sh).
 
 ## Status
 
-This crate is **pre-1.0** (`v0.1.0`) and tracks a specific Mithril branch — the `host` and `tests` features pin against `Sbcdn/mithril.git@mithril_risc0`, which carries the `num-integer-backend` and crypto-version patches needed for clean RISC Zero builds. The guest-side surface (default feature set) does not depend on that fork.
+Pre-1.0 (`v0.1.0`). The `host` feature pins a frozen `Sbcdn/mithril.git@mithril_risc0` commit; the guest-only default feature set does not depend on the fork.
 
-The RISC Zero precompile story for `ed25519-dalek`, `blst`, and `sha2` is currently handled via the commented `[patch.crates-io]` block in [Cargo.toml](Cargo.toml#L34-L37); integrators building a guest binary will typically want to re-enable equivalents in the workspace where the patch can take effect.
+The RISC0 precompile patches for `ed25519-dalek`, `blst`, and `sha2` are intentionally commented out in [`Cargo.toml`](Cargo.toml#L80-L83) — they must be applied at the workspace level by the downstream guest consumer (e.g. `oaks_cert/guest`). See the comment block above the patches for the rationale.
 
-Contributions, audits, and bug reports are welcome — the equivalence harness is the contract; if you can break it, please open an issue.
-
----
+Contributions, audits, and bug reports are welcome. The equivalence harness is the contract.
 
 ## License
 

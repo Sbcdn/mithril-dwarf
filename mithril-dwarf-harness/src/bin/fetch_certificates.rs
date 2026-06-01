@@ -27,7 +27,10 @@ struct Args {
     certificate_hash: String,
 
     /// Output directory for certificate files
-    #[arg(long, default_value = "tests/test_data/certificates")]
+    #[arg(
+        long,
+        default_value = "mithril-dwarf-harness/tests/test_data/certificates"
+    )]
     output_dir: PathBuf,
 
     /// Maximum certificates to fetch (safety limit)
@@ -128,8 +131,8 @@ fn save_certificate(
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    println!("🔍 Mithril Certificate Chain Fetcher");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Mithril certificate-chain fetcher");
+    println!("------------------------------------------------");
 
     // Parse network
     let network = Network::from_str(&args.network)?;
@@ -151,76 +154,55 @@ async fn main() -> Result<()> {
     let mut certificates_fetched = 0;
     let mut genesis_reached = false;
 
-    println!("📥 Fetching certificate chain (walking backward to genesis)...\n");
+    println!("Fetching certificate chain (walking backward to genesis)...\n");
 
     loop {
-        // Safety check
         if certificates_fetched >= args.max_certificates {
-            eprintln!(
-                "⚠️  Reached maximum certificate limit ({})",
-                args.max_certificates
-            );
-            eprintln!("   Use --max-certificates to increase the limit");
+            eprintln!("Reached max-certificates limit ({})", args.max_certificates);
+            eprintln!("Use --max-certificates to raise it");
             break;
         }
 
-        // Fetch current certificate
         println!("[{}] Fetching: {}", certificates_fetched + 1, current_hash);
 
         let cert = get_certificate(&client, &current_hash)
             .await?
             .ok_or_else(|| anyhow!("Certificate not found: {}", current_hash))?;
 
-        // Convert to CertificateMessage
         let cert_msg: CertificateMessage = cert;
 
-        // Check if genesis
         if is_genesis_certificate(&cert_msg) {
-            println!("   ✅ Genesis certificate reached!");
-
-            // Save genesis certificate
+            println!("   Genesis certificate reached");
             let filepath = save_certificate(&cert_msg, &current_hash, &args.output_dir)?;
-            println!("   💾 Saved: {}", filepath.display());
-
+            println!("   Saved: {}", filepath.display());
             genesis_reached = true;
             certificates_fetched += 1;
             break;
         }
 
-        // Get previous hash (for next iteration)
         let previous_hash = cert_msg.previous_hash.clone();
-
-        // Display certificate info
         println!("   Epoch:         {}", cert_msg.epoch);
         println!("   Previous hash: {}", previous_hash);
-
-        // Save certificate
         let filepath = save_certificate(&cert_msg, &current_hash, &args.output_dir)?;
-        println!("   💾 Saved: {}", filepath.display());
+        println!("   Saved: {}", filepath.display());
         println!();
-
         certificates_fetched += 1;
-
-        // Move to previous certificate
         current_hash = previous_hash;
     }
 
-    // Summary
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("📊 Summary:");
-    println!("   Certificates fetched: {}", certificates_fetched);
+    println!("------------------------------------------------");
+    println!("Summary:");
+    println!("  Certificates fetched: {}", certificates_fetched);
     println!(
-        "   Genesis reached:      {}",
-        if genesis_reached { "✅ Yes" } else { "❌ No" }
+        "  Genesis reached:      {}",
+        if genesis_reached { "yes" } else { "no" }
     );
-    println!("   Output directory:     {}", args.output_dir.display());
+    println!("  Output directory:     {}", args.output_dir.display());
 
     if !genesis_reached {
-        println!("\n⚠️  Warning: Genesis certificate was not reached!");
-        println!("   The chain may be incomplete.");
+        println!("\nWarning: chain may be incomplete; genesis not reached.");
     }
 
-    // Create metadata file
     create_metadata_file(
         &args.output_dir,
         &network,
@@ -229,7 +211,7 @@ async fn main() -> Result<()> {
         genesis_reached,
     )?;
 
-    println!("\n✅ Certificate chain fetched successfully!");
+    println!("\nDone.");
 
     Ok(())
 }
@@ -254,7 +236,7 @@ fn create_metadata_file(
     let metadata_path = output_dir.join("chain_metadata.json");
     fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)?;
 
-    println!("   📄 Metadata: {}", metadata_path.display());
+    println!("   Metadata: {}", metadata_path.display());
 
     Ok(())
 }

@@ -1,0 +1,46 @@
+[package]
+name = "mithril-dwarf-harness"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Torben Poguntke <sbcdn@pm.me>"]
+publish = false
+
+[[bin]]
+name = "fetch_certificates"
+path = "src/bin/fetch_certificates.rs"
+
+[[bin]]
+name = "audit"
+path = "src/bin/audit.rs"
+
+[dependencies]
+mithril-dwarf = { path = "..", features = ["host"] }
+
+# Upstream Mithril, pinned to a specific rev so the comparison reference
+# can never silently drift between cargo invocations.
+mithril-client = { git = "https://github.com/Sbcdn/mithril.git", rev = "36fd7f8818f0ff14b10336fa7f855d52698e40a8", features = ["num-integer-backend"] }
+mithril-common = { git = "https://github.com/Sbcdn/mithril.git", rev = "36fd7f8818f0ff14b10336fa7f855d52698e40a8", features = ["num-integer-backend"] }
+
+anyhow         = "1.0.94"
+tokio          = { version = "1", features = ["full"] }
+clap           = { version = "4", features = ["derive"] }
+serde_json     = "1"
+bincode        = "1.3"
+hex            = "0.4"
+async-trait    = "0.1.89"
+slog           = "2.8.2"
+chrono         = "0.4.41"
+
+# Test-only: dwarf_rejects_bls_identity_in_cert in tests/equivalence.rs
+# pins blst's identity-point behaviour. Keep the version pinned to the
+# same release dwarf uses so the assertion tracks production behaviour.
+[dev-dependencies]
+blst = "=0.3.15"
+
+# divergence_registry pin tests need direct access to ed25519-dalek
+# and blake2 to construct synthetic adversarial inputs that exercise
+# specific divergences. Same version pins as the production runtime.
+ed25519-dalek = "=2.1.1"
+blake2 = "=0.10.6"
+sha2 = "=0.10.9"
