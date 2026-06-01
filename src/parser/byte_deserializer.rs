@@ -1,11 +1,11 @@
-// Lightweight error type (no string allocations!)
+/// Allocation-free error type for the binary parser.
 #[derive(Debug, Clone, Copy)]
 pub enum ParseError {
     OutOfBounds,
     InvalidFormat,
 }
 
-// Zero-copy parser - no Cursor overhead
+/// Hand-rolled zero-copy parser; avoids `std::io::Cursor` overhead.
 pub struct FastByteParser<'a> {
     data: &'a [u8],
     pos: usize,
@@ -123,27 +123,20 @@ impl<'a> FastByteParser<'a> {
         Ok(slice.try_into().unwrap())
     }
 
+    /// Borrow the next `n` bytes and advance the cursor; consumers
+    /// decode entries lazily.
     #[inline(always)]
-    fn _skip(&mut self, n: usize) -> Result<(), ParseError> {
+    fn read_n_bytes(&mut self, n: usize) -> Result<&'a [u8], ParseError> {
         self.check_bounds(n)?;
+        let slice = &self.data[self.pos..self.pos + n];
         self.pos += n;
-        Ok(())
+        Ok(slice)
     }
 
-    #[inline(always)]
-    fn _skip_string(&mut self) -> Result<(), ParseError> {
-        let len = self.read_u32()? as usize;
-        self._skip(len)
-    }
-
-    #[inline(always)]
-    fn _skip_short_string(&mut self) -> Result<(), ParseError> {
-        let len = self.read_u8()? as usize;
-        self._skip(len)
-    }
 }
 
-// Zero-copy certificate structure
+/// Borrowed view over a serialised certificate; field slices index
+/// directly into the source buffer.
 #[derive(Debug)]
 pub struct CertificateZeroCopy<'a> {
     pub hash: &'a [u8],
@@ -183,7 +176,7 @@ pub struct ProtocolMessageBasicZeroCopy<'a> {
 
 #[derive(Debug)]
 pub struct AggregateVerificationKeyParsed<'a> {
-    pub root: &'a [u8], // Zero-copy merkle root (32 bytes for Blake2b)
+    pub root: &'a [u8], // 32-byte Blake2b<U32> Merkle root, borrowed.
     pub nr_leaves: u64,
     pub total_stake: u64,
 }
@@ -196,12 +189,57 @@ pub struct MultiSigParsed<'a> {
 
 #[derive(Debug)]
 pub struct SignatureParsed<'a> {
-    pub sigma_bytes: &'a [u8; 48], // BLS G1 point (zero-copy!)
-    pub indexes: Vec<u64>,         // Small Vec, must allocate
+    /// BLS G1 point, borrowed.
+    pub sigma_bytes: &'a [u8; 48],
+    /// `indexes_count` little-endian `u64`s, decoded on demand.
+    pub indexes_bytes: &'a [u8],
+    pub indexes_count: u8,
     pub signer_index: u64,
-    pub vk_bytes: &'a [u8; 96], // BLS G2 point (zero-copy!)
+    /// BLS G2 point, borrowed.
+    pub vk_bytes: &'a [u8; 96],
     pub stake: u64,
 }
+
+impl<'a> SignatureParsed<'a> {
+    #[inline]
+    pub fn indexes(&self) -> SignatureIndexIter<'a> {
+        SignatureIndexIter {
+            remaining: self.indexes_bytes,
+        }
+    }
+
+    #[inline]
+    pub fn indexes_len(&self) -> usize {
+        self.indexes_count as usize
+    }
+}
+
+/// Allocation-free iterator over [`SignatureParsed::indexes_bytes`].
+pub struct SignatureIndexIter<'a> {
+    remaining: &'a [u8],
+}
+
+impl<'a> Iterator for SignatureIndexIter<'a> {
+    type Item = u64;
+
+    #[inline]
+    fn next(&mut self) -> Option<u64> {
+        if self.remaining.len() < 8 {
+            return None;
+        }
+        let (head, tail) = self.remaining.split_at(8);
+        self.remaining = tail;
+        Some(u64::from_le_bytes(head.try_into().unwrap()))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = self.remaining.len() / 8;
+        (n, Some(n))
+    }
+}
+
+impl ExactSizeIterator for SignatureIndexIter<'_> {}
 
 #[derive(Debug)]
 pub enum SignatureBasicZeroCopy<'a> {
@@ -210,12 +248,14 @@ pub enum SignatureBasicZeroCopy<'a> {
     },
     Multi {
         entity_type_discriminant: u8,
-        entity_type_data: Vec<u64>,
-        signature: MultiSigParsed<'a>, // CHANGED: Parse our format instead of ProtocolMultiSignature
+        /// At most two `u64`s per upstream `SignedEntityType`. The
+        /// discriminant identifies which slots are valid; the unused
+        /// slot stays 0 and is never read.
+        entity_type_data: [u64; 2],
+        signature: MultiSigParsed<'a>,
     },
 }
 
-// Fast parsing function
 #[inline]
 pub fn certificate_from_bytes<'a>(bytes: &'a [u8]) -> Result<CertificateZeroCopy<'a>, ParseError> {
     let mut parser = FastByteParser::new(bytes);
@@ -297,7 +337,7 @@ fn read_protocol_message_fast<'a>(
 fn read_aggregate_verification_key_fast<'a>(
     parser: &mut FastByteParser<'a>,
 ) -> Result<AggregateVerificationKeyParsed<'a>, ParseError> {
-    let root = parser.read_bytes_slice()?; // Zero-copy!
+    let root = parser.read_bytes_slice()?;
     let nr_leaves = parser.read_u64()?;
     let total_stake = parser.read_u64()?;
 
@@ -308,7 +348,6 @@ fn read_aggregate_verification_key_fast<'a>(
     })
 }
 
-// UPDATED: Parse multi-signature in our optimized format
 #[inline]
 fn read_multi_signature_fast<'a>(
     parser: &mut FastByteParser<'a>,
@@ -319,11 +358,8 @@ fn read_multi_signature_fast<'a>(
     for _ in 0..sig_count {
         let sigma_bytes = parser.read_fixed_48()?;
 
-        let idx_count = parser.read_u8()? as usize;
-        let mut indexes = Vec::with_capacity(idx_count);
-        for _ in 0..idx_count {
-            indexes.push(parser.read_u64()?);
-        }
+        let idx_count = parser.read_u8()?;
+        let indexes_bytes = parser.read_n_bytes(idx_count as usize * 8)?;
 
         let signer_index = parser.read_u64()?;
         let vk_bytes = parser.read_fixed_96()?;
@@ -331,7 +367,8 @@ fn read_multi_signature_fast<'a>(
 
         signatures.push(SignatureParsed {
             sigma_bytes,
-            indexes,
+            indexes_bytes,
+            indexes_count: idx_count,
             signer_index,
             vk_bytes,
             stake,
@@ -372,14 +409,51 @@ fn read_signature_fast<'a>(
     }
 }
 
+/// Decode the inner `u64` fields of a `SignedEntityType` into a fixed
+/// `[u64; 2]`. Single-field variants leave slot 1 as `0`.
 #[inline]
 fn read_entity_type_data_fast(
     parser: &mut FastByteParser,
     discriminant: u8,
-) -> Result<Vec<u64>, ParseError> {
+) -> Result<[u64; 2], ParseError> {
     match discriminant {
-        0 | 1 => Ok(vec![parser.read_u64()?]),
-        2 | 3 | 4 => Ok(vec![parser.read_u64()?, parser.read_u64()?]),
+        0 | 1 => Ok([parser.read_u64()?, 0]),
+        2 | 3 | 4 => {
+            let a = parser.read_u64()?;
+            let b = parser.read_u64()?;
+            Ok([a, b])
+        }
         _ => Err(ParseError::InvalidFormat),
+    }
+}
+
+#[cfg(test)]
+mod entity_type_discriminant_tests {
+    //! Pin: parser admits discriminants 0..=4 and rejects everything
+    //! else. Tracks upstream Mithril's `SignedEntityType` arity (5
+    //! variants); a new variant or a removed one trips this test.
+    use super::{FastByteParser, ParseError, read_entity_type_data_fast};
+
+    const SCRATCH: [u8; 16] = [0u8; 16];
+
+    #[test]
+    fn rejects_discriminants_above_4() {
+        for d in 5u8..=255 {
+            let mut parser = FastByteParser::new(&SCRATCH);
+            let result = read_entity_type_data_fast(&mut parser, d);
+            assert!(
+                matches!(result, Err(ParseError::InvalidFormat)),
+                "discriminant {d} must reject; got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_discriminants_0_through_4() {
+        for d in 0u8..=4 {
+            let mut parser = FastByteParser::new(&SCRATCH);
+            let result = read_entity_type_data_fast(&mut parser, d);
+            assert!(result.is_ok(), "discriminant {d}: {result:?}");
+        }
     }
 }

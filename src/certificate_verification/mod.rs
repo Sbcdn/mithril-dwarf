@@ -1,34 +1,35 @@
-//! Certificate verification for RISC0
-//! Optimized for minimal cycle count while maintaining security
-//use risc0_zkvm::guest::env;
+//! Certificate verification.
 
 pub mod basic_checks;
 pub mod complex_checks;
+pub mod hash_sink;
 pub mod medium_checks;
+
+pub use hash_sink::{HashSink, Sha256Sink};
 
 use crate::parser::byte_deserializer::{CertificateZeroCopy, SignatureBasicZeroCopy};
 
-/// Lightweight error type (no string allocations!)
+/// 4-byte `Copy` enum; no payload, no allocation on failure paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyError {
-    // Basic check errors
+    // Basic
     InfiniteLoop,
     PreviousHashMismatch,
     EpochGap,
     EpochMismatch,
     CurrentEpochNotFound,
 
-    // Medium check errors
+    // Medium
     HashMismatch,
     SignedMessageMismatch,
 
-    // Chain verification errors
+    // Chain
     AVKMismatch,
     ProtocolParamsMismatch,
     NextAVKNotFound,
     NextProtocolParamsNotFound,
 
-    // BLS verification errors
+    // BLS
     BLSVerificationFailed,
     IndexOutOfBounds,
     IndexNotUnique,
@@ -36,136 +37,96 @@ pub enum VerifyError {
     NoQuorum,
     BatchProofInvalid,
 
-    // Genesis verification errors
+    // Genesis
     Ed25519VerificationFailed,
     InvalidGenesisSignature,
     NoGenesisKeyProvided,
 
-    // Parsing/encoding errors
+    // Parsing
     InvalidUtf8,
     ParseIntError,
     InvalidHexEncoding,
     FormatError,
 
-    // Type errors
+    // Dispatch
     NotStandardCertificate,
     NotGenesisCertificate,
 
-    // Batch proof errors
+    // Batch proof
     InvalidBatchProof,
     InvalidAVKEncoding,
     InvalidProtocolParamsHash,
 
-    // Placeholder
     NotImplemented,
 }
 
-/// Verify a genesis certificate
-/// Genesis certificates use Ed25519 signature instead of BLS multi-signature
+/// Genesis (Ed25519-signed) certificate.
 pub fn verify_genesis_certificate(
     cert: &CertificateZeroCopy,
-    genesis_vk: &[u8; 32], // Ed25519 public key
+    genesis_vk: &[u8; 32],
 ) -> Result<(), VerifyError> {
-    // Must be genesis signature
     let genesis_sig = match &cert.signature {
         SignatureBasicZeroCopy::Genesis { signature_bytes } => signature_bytes,
         _ => return Err(VerifyError::NotGenesisCertificate),
     };
 
-    // Check hash matches content
     medium_checks::verify_hash_matches_content(cert)?;
-
-    // Check signed message matches protocol message
     medium_checks::verify_signed_message_matches_protocol(cert)?;
-
-    // Check epoch matches protocol message
     basic_checks::verify_epoch_matches_protocol_message(cert)?;
-
-    // Verify Ed25519 signature
     verify_ed25519_signature(cert.signed_message, genesis_sig, genesis_vk)?;
 
     Ok(())
 }
 
-/// Verify a standard (non-genesis) certificate against its previous certificate
-/// This follows Mithril's verify_standard_certificate logic exactly
+/// Standard (BLS-multisigned) certificate, verified against its predecessor.
+///
+/// Phases run cheapest-first; `pm_digest` and `pp_digest` are computed once
+/// and threaded into both phase 2 and phase 3 to avoid a second SHA-256.
 pub fn verify_standard_certificate(
     cert: &CertificateZeroCopy,
     prev_cert: &CertificateZeroCopy,
 ) -> Result<(), VerifyError> {
-    // Must be multi signature
     let _multi_sig = match &cert.signature {
         SignatureBasicZeroCopy::Multi { signature, .. } => signature,
         _ => return Err(VerifyError::NotStandardCertificate),
     };
 
-    // === PHASE 1: BASIC CHECKS ===
-    // Fail fast checks that don't require computation
-    //let start = env::cycle_count();
+    // Phase 1: basic comparisons.
     basic_checks::verify_not_infinite_loop(cert)?;
-    //let end = env::cycle_count();
-    //eprintln!("verify_not_infinite_loop: {}", end - start);
-
-    //let start = env::cycle_count();
     basic_checks::verify_epoch_matches_protocol_message(cert)?;
-    //let end = env::cycle_count();
-    //eprintln!("verify_epoch_matches_protocol_message: {}", end - start);
-
-    //let start = env::cycle_count();
     basic_checks::verify_epoch_chaining(cert, prev_cert)?;
-    //let end = env::cycle_count();
-    //eprintln!("verify_epoch_chaining: {}", end - start);
-
-    //let start = env::cycle_count();
     basic_checks::verify_previous_hash_matches(cert, prev_cert)?;
-    //let end = env::cycle_count();
-    //eprintln!("verify_previous_hash_matches: {}", end - start);
 
-    // === PHASE 2: MEDIUM CHECKS ===
-    // Hash computations
-    //let start = env::cycle_count();
-    medium_checks::verify_hash_matches_content(cert)?;
-    //let end = env::cycle_count();
-    //eprintln!("verify_hash_matches_content: {}", end - start);
+    // Phase 2: SHA-256 over canonical bytes.
+    let pm_digest = medium_checks::compute_protocol_message_digest(&cert.protocol_message);
+    let pp_digest = medium_checks::compute_protocol_parameters_digest(
+        cert.metadata.k,
+        cert.metadata.m,
+        cert.metadata.phi_f,
+    );
+    medium_checks::verify_hash_matches_content_with_pm_and_pp_digests(
+        cert, &pm_digest, &pp_digest,
+    )?;
+    medium_checks::verify_signed_message_matches_protocol_with_pm_digest(cert, &pm_digest)?;
 
-    //let start = env::cycle_count();
-    medium_checks::verify_signed_message_matches_protocol(cert)?;
-    //let end = env::cycle_count();
-    //eprintln!("verify_signed_message_matches_protocol: {}", end - start);
-
-    // === PHASE 3: CHAIN VERIFICATION ===
-    // AVK and protocol params chaining
-    let same_epoch = cert.epoch == prev_cert.epoch;
-
-    if same_epoch {
-        // Same epoch: must match exactly
+    // Phase 3: AVK + protocol-params chaining.
+    if cert.epoch == prev_cert.epoch {
         basic_checks::verify_avk_same_epoch(cert, prev_cert)?;
         basic_checks::verify_protocol_params_same_epoch(cert, prev_cert)?;
     } else {
-        // Different epoch: check against next_ values from previous cert
-        //let start = env::cycle_count();
         complex_checks::verify_avk_chain(cert, prev_cert)?;
-        //let end = env::cycle_count();
-        //eprintln!("verify_avk_chain: {}", end - start);
-        //let start = env::cycle_count();
-        complex_checks::verify_protocol_params_chain(cert, prev_cert)?;
-        //let end = env::cycle_count();
-        //eprintln!("verify_protocol_params_chain: {}", end - start);
+        complex_checks::verify_protocol_params_chain_cross_epoch_with_pp_digest(
+            cert, prev_cert, &pp_digest,
+        )?;
     }
 
-    // === PHASE 4: BLS MULTI-SIGNATURE VERIFICATION ===
-    // Most expensive check - only if all above passed!
-    //let start = env::cycle_count();
+    // Phase 4: BLS multi-signature.
     complex_checks::verify_bls_multisig(cert)?;
-    //let end = env::cycle_count();
-    //eprintln!("verify_bls_multisig: {}", end - start);
 
     Ok(())
 }
 
-/// Verify a certificate (either genesis or standard)
-/// This is the main entry point that determines certificate type
-/// Matches Mithril's verify_certificate function
+/// Dispatch on signature variant; genesis needs `genesis_vk`, standard needs `prev_cert`.
 pub fn verify_certificate(
     cert: &CertificateZeroCopy,
     prev_cert: Option<&CertificateZeroCopy>,
@@ -173,24 +134,17 @@ pub fn verify_certificate(
 ) -> Result<(), VerifyError> {
     match &cert.signature {
         SignatureBasicZeroCopy::Genesis { .. } => {
-            // Genesis certificate
-            if let Some(genesis_key) = genesis_vk {
-                verify_genesis_certificate(cert, genesis_key)
-            } else {
-                Err(VerifyError::NoGenesisKeyProvided)
-            }
+            let key = genesis_vk.ok_or(VerifyError::NoGenesisKeyProvided)?;
+            verify_genesis_certificate(cert, key)
         }
         SignatureBasicZeroCopy::Multi { .. } => {
-            // Standard certificate - needs previous certificate
             let prev = prev_cert.ok_or(VerifyError::PreviousHashMismatch)?;
             verify_standard_certificate(cert, prev)
         }
     }
 }
 
-/// Verify an entire certificate chain
-/// Starts from the given certificate and walks backwards to genesis
-/// This matches Mithril's verify_certificate_chain logic
+/// Walks `certificates[0..]` (newest → oldest); the last entry must be genesis.
 pub fn verify_certificate_chain(
     certificates: &[CertificateZeroCopy],
     genesis_vk: Option<&[u8; 32]>,
@@ -198,30 +152,21 @@ pub fn verify_certificate_chain(
     if certificates.is_empty() {
         return Ok(());
     }
-
-    // Verify each certificate in order (newest to oldest)
     for i in 0..certificates.len() {
-        let cert = &certificates[i];
-        let prev_cert = if i + 1 < certificates.len() {
-            Some(&certificates[i + 1])
-        } else {
-            None
-        };
-
-        verify_certificate(cert, prev_cert, genesis_vk)?;
+        let prev = certificates.get(i + 1);
+        verify_certificate(&certificates[i], prev, genesis_vk)?;
     }
-
     Ok(())
 }
 
-/// Verify Ed25519 signature (for genesis certificates)
-/// Uses RISC0's Ed25519 precompile if available, otherwise software implementation
+/// Non-strict `verify`; `verify_strict` is empirically equivalent under
+/// `ed25519-dalek` 2.x against malleability twins (both route through
+/// `Scalar::from_canonical_bytes`). Pinned by the divergence registry.
 fn verify_ed25519_signature(
     message: &[u8],
     signature: &[u8],
     public_key: &[u8; 32],
 ) -> Result<(), VerifyError> {
-    // Use ed25519-dalek for host testing
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
     if signature.len() != 64 {
@@ -247,8 +192,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_verify_error_size() {
-        // Ensure error type is small (important for RISC0)
+    fn verify_error_fits_in_4_bytes() {
         assert!(core::mem::size_of::<VerifyError>() <= 4);
     }
 }
