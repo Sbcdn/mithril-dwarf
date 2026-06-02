@@ -16,8 +16,8 @@
 use std::path::Path;
 
 use mithril_dwarf_harness::{
-    AppliedMutation, CertAudit, CorpusEntry, ErrorCategory, MAINNET_GENESIS_VK_HEX, Outcome,
-    applied_mutation_label, audit_corpus_entry, audit_mutated_top_level_only,
+    AppliedMutation, CertAudit, CorpusEntry, ErrorCategory, Outcome,
+    applied_mutation_label, apply_mutation, audit_corpus_entry, audit_mutated_top_level_only,
     audit_standard_top_level_only, genesis_vk_for_cert, load_corpus, render_report,
     standard_mutations,
 };
@@ -297,6 +297,143 @@ fn mutations_are_rejected_equivalently() {
         }
         let (full_report, _) = render_report(&[], &all_mutated);
         panic!("{details}\nFull report:\n{full_report}");
+    }
+}
+
+/// Adversarial-precondition gate for the mutation suite.
+///
+/// `mutations_are_rejected_equivalently` derives its signal from the
+/// claim "mutating a legitimate cert produces a rejected cert". That
+/// claim only carries weight if the unmutated baseline is independently
+/// accepted by both impls — otherwise "rejection after mutation" is
+/// vacuously true (the cert was already rejected before the mutation).
+///
+/// `corpus_positive_audit_bitwise_match` is not a substitute: it
+/// confirms per-check bitwise match between the impls, which is
+/// satisfied even when both produce `Fail` outcomes (a bitwise-matching
+/// double rejection). This gate adds the missing constraint: at the
+/// top level, both impls must `Pass` on every cert the mutation suite
+/// will use as a base.
+///
+/// Failure here means "the mutation suite is testing something other
+/// than what its name claims". Fix the corpus (drop the offending
+/// entry or fix its source) before drawing conclusions from
+/// `mutations_are_rejected_equivalently`.
+#[test]
+fn mutation_suite_baseline_preconditions_hold() {
+    let load = load_corpus(Path::new(CORPUS_DIR));
+    assert!(
+        load.load_errors.is_empty(),
+        "corpus load errors: {:?}",
+        load.load_errors
+    );
+    let standard_bases: Vec<&CorpusEntry> = load
+        .entries
+        .iter()
+        .filter(|e| matches!(e, CorpusEntry::Standard { .. }))
+        .collect();
+    assert!(
+        !standard_bases.is_empty(),
+        "no standard cert in corpus — mutation suite would have no bases"
+    );
+
+    let mut vacuous: Vec<String> = Vec::new();
+    for base in &standard_bases {
+        let cert = base.primary_cert();
+        let vk = genesis_vk_for_cert(cert).unwrap_or_else(|| {
+            panic!(
+                "no genesis VK for network {:?} (cert {})",
+                cert.metadata.network, cert.hash
+            )
+        });
+        let audit = audit_corpus_entry(base, vk);
+        let m_pass = matches!(audit.full_verify.mithril.outcome, Outcome::Pass);
+        let d_pass = matches!(audit.full_verify.dwarf.outcome, Outcome::Pass);
+        if !(m_pass && d_pass) {
+            vacuous.push(format!(
+                "  {}: mithril={:?}, dwarf={:?}",
+                audit.cert_label,
+                audit.full_verify.mithril.outcome,
+                audit.full_verify.dwarf.outcome
+            ));
+        }
+    }
+
+    assert!(
+        vacuous.is_empty(),
+        "mutation-suite baseline broken — these corpus entries are not \
+         accepted by both impls in their unmutated state, so any \
+         rejection after mutation is vacuous:\n{}\n\n\
+         Refresh the corpus via `fetch_certificates`, or remove the \
+         offending entries before relying on \
+         `mutations_are_rejected_equivalently`.",
+        vacuous.join("\n")
+    );
+
+    // Mutation-set integrity: every mutation must produce a behavioural
+    // change on at least one base. "Behavioural change" means either
+    // byte-different output after round-tripping through the
+    // host serializer, OR the mutated form failed `try_into()` (which
+    // counts: the mutation had bite at the type-conversion boundary).
+    // Two distinct failure modes are reported separately so the user
+    // can tell whether to fix a mutation (byte no-op) or the corpus
+    // (mutation never applies).
+    use mithril_dwarf::certificate_to_bytes;
+    let mutations = standard_mutations();
+    let mut dead_mutations: Vec<(String, &'static str)> = Vec::new();
+    for applied in &mutations {
+        let mut applicable_count = 0usize;
+        let mut produced_change = false;
+        for base in &standard_bases {
+            let base_cert = match base {
+                CorpusEntry::Standard { current, .. } => current,
+                _ => unreachable!(),
+            };
+            if !applied.mutation.is_applicable_to(base_cert) {
+                continue;
+            }
+            applicable_count += 1;
+            let original_typed: mithril_common::entities::Certificate =
+                base_cert.clone().try_into().expect("base try_into");
+            let original_bytes = certificate_to_bytes(&original_typed);
+            let mutated_msg = apply_mutation(base_cert, &applied.mutation);
+            let mutated_typed: Result<mithril_common::entities::Certificate, _> =
+                mutated_msg.try_into();
+            let mutated_bytes = match mutated_typed {
+                Ok(t) => certificate_to_bytes(&t),
+                Err(_) => {
+                    produced_change = true;
+                    break;
+                }
+            };
+            if original_bytes != mutated_bytes {
+                produced_change = true;
+                break;
+            }
+        }
+        if applicable_count == 0 {
+            dead_mutations.push((
+                applied_mutation_label(applied),
+                "no applicable base in corpus — extend corpus or drop the mutation",
+            ));
+        } else if !produced_change {
+            dead_mutations.push((
+                applied_mutation_label(applied),
+                "byte-identical output on every applicable base — mutation is a no-op",
+            ));
+        }
+    }
+    if !dead_mutations.is_empty() {
+        let detail = dead_mutations
+            .iter()
+            .map(|(m, why)| format!("  - {m}\n      {why}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        panic!(
+            "mutation-set integrity broken — these mutations would let \
+             `mutations_are_rejected_equivalently` claim coverage they \
+             do not have:\n{detail}"
+        );
     }
 }
 
