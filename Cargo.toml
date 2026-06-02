@@ -12,6 +12,10 @@ authors = ["Torben Poguntke <sbcdn@pm.me>"]
 [features]
 default = []
 host = ["dep:anyhow","dep:mithril-client","dep:mithril-common","dep:mithril-stm"]
+# Reserved no-op feature so `#[cfg(feature = "future_snark")]` branches in
+# the host adapter compile cleanly without a `check-cfg` warning. dwarf
+# does not currently enable the SNARK proof system on its mithril deps.
+future_snark = []
 
 [dependencies]
 blake2 = "0.10.6"
@@ -35,9 +39,9 @@ risc0-zkvm = { version = "^3.0.3", default-features = false, features = ['std'] 
 # guest, and any downstream consumer all see the same code; flip the rev
 # explicitly when ready to bump.
 anyhow = { version = "1.0.94", optional = true }
-mithril-client = { git = "https://github.com/Sbcdn/mithril.git", rev = "36fd7f8818f0ff14b10336fa7f855d52698e40a8", features = ["num-integer-backend"], optional = true}
-mithril-common = { git = "https://github.com/Sbcdn/mithril.git", rev = "36fd7f8818f0ff14b10336fa7f855d52698e40a8", features = ["num-integer-backend"], optional = true}
-mithril-stm = { git = "https://github.com/Sbcdn/mithril.git", rev = "36fd7f8818f0ff14b10336fa7f855d52698e40a8", features = ["benchmark-internals","num-integer-backend"], optional = true}
+mithril-client = { git = "https://github.com/Sbcdn/mithril.git", rev = "7e787deefd079c3f2b3160785e58a6b4affc1340", features = ["num-integer-backend", "rustls"], optional = true }
+mithril-common = { git = "https://github.com/Sbcdn/mithril.git", rev = "7e787deefd079c3f2b3160785e58a6b4affc1340", features = ["num-integer-backend"], optional = true }
+mithril-stm = { git = "https://github.com/Sbcdn/mithril.git", rev = "7e787deefd079c3f2b3160785e58a6b4affc1340", features = ["benchmark-internals", "num-integer-backend"], optional = true }
 
 # ============================================================
 # CRITICAL: RISC0 PRECOMPILE PATCHES — DOWNSTREAM GUEST REQUIRED
@@ -126,3 +130,4 @@ required-features = ["host"]
 name = "equivalence_performance"
 harness = false
 required-features = ["host"]
+

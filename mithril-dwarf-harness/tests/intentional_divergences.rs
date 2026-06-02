@@ -18,6 +18,7 @@
 //! | 3 | `verify_epoch_chaining` direction asymmetry             | check     | Conditionally       |
 //! | 4 | Check ordering in `verify_standard_certificate`         | orchestr. | Yes (top-level)     |
 //! | 5 | usize-vs-u64 BLS scalar index width on RISC0            | platform  | Yes (BLS math)      |
+//! | 6 | NextAvk chain compare: bytewise vs structural           | check     | On real chains      |
 
 use mithril_dwarf::certificate_verification::VerifyError;
 use mithril_dwarf_harness::{
@@ -286,6 +287,80 @@ fn divergence_5_usize_index_width_pinned() {
     hasher.update(index.to_be_bytes());
     let scalar: [u8; 16] = hasher.finalize().into();
     assert_eq!(scalar.len(), 16);
+}
+
+// Divergence #6 — NextAvk chain compare: bytewise vs structural
+//
+// Upstream Mithril 2617.0 changed
+// `verify_concatenation_aggregate_verification_key_chaining` to decode the
+// previous cert's `protocol_message[NextAggregateVerificationKey]` string
+// via `ProtocolAggregateVerificationKeyForConcatenation::try_from(&str)`
+// and compare structurally to the current cert's
+// `aggregate_verification_key`. Whitespace, field order, and any other
+// representation-only difference in the NextAvk string is therefore
+// accepted by upstream.
+//
+// dwarf's `verify_avk_chain` streams the current cert's AVK JSON hex into
+// an `EqSink` over the previous cert's NextAvk string and rejects on any
+// byte mismatch. dwarf is strictly stricter: it accepts a subset of what
+// upstream accepts.
+//
+// On real Cardano chains the NextAvk string is produced by the aggregator
+// and round-trips through serde verbatim across cert pairs, so dwarf and
+// upstream produce the same verdict on every corpus cert (verified by
+// `divergence_registry_verdict_equivalence_holds_on_corpus`). The
+// divergence only surfaces on adversarially re-encoded inputs.
+//
+// Direction is safe: dwarf can reject more, never accept more.
+
+/// Pin: upstream's `try_from(&str)` on the NextAvk string accepts a
+/// pretty-printed (whitespace-padded) re-encoding; dwarf would reject
+/// the same input bytewise. The pin synthesises a NextAvk re-encoding
+/// and asserts upstream's `try_from` succeeds — if upstream tightens
+/// to bytewise compare in the future, this trips and the registry
+/// entry can be removed.
+#[test]
+fn divergence_6_nextavk_structural_compare_pinned() {
+    use mithril_common::crypto_helper::ProtocolAggregateVerificationKeyForConcatenation;
+
+    let load = load_corpus(Path::new(CORPUS_DIR));
+    // Find any standard pair so we can reuse a real NextAvk string.
+    let (_curr, prev) = load
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            CorpusEntry::Standard { current, previous } => Some((current, previous)),
+            _ => None,
+        })
+        .expect("corpus has a standard pair");
+
+    // Re-encode by parsing then re-serialising via serde_json::to_string_pretty.
+    // upstream's try_from must still accept the pretty form.
+    let nextavk_compact = prev
+        .protocol_message
+        .message_parts
+        .get(&mithril_common::entities::ProtocolMessagePartKey::NextAggregateVerificationKey)
+        .expect("prev has NextAvk part")
+        .clone();
+    let nextavk_pretty = {
+        let decoded = hex::decode(&nextavk_compact).expect("hex");
+        let json_value: serde_json::Value =
+            serde_json::from_slice(&decoded).expect("json");
+        let pretty = serde_json::to_string_pretty(&json_value).expect("pretty");
+        hex::encode(pretty)
+    };
+    assert_ne!(
+        nextavk_compact, nextavk_pretty,
+        "pretty re-encoding produced the same bytes as the compact form"
+    );
+
+    let parsed_pretty =
+        ProtocolAggregateVerificationKeyForConcatenation::try_from(nextavk_pretty.as_str());
+    assert!(
+        parsed_pretty.is_ok(),
+        "upstream try_from rejected pretty-form NextAvk: {parsed_pretty:?}. \
+         If upstream tightened to bytewise compare, remove divergence #6."
+    );
 }
 
 /// Corpus-wide gate: documented divergences must preserve verdict

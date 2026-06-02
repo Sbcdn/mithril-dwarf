@@ -802,13 +802,16 @@ pub fn protocol_message_key_to_string(discriminant: u8) -> &'static str {
     match discriminant {
         0 => "snapshot_digest",
         1 => "cardano_transactions_merkle_root",
-        2 => "next_aggregate_verification_key",
-        3 => "next_protocol_parameters",
-        4 => "current_epoch",
-        5 => "latest_block_number",
-        6 => "cardano_stake_distribution_epoch",
-        7 => "cardano_stake_distribution_merkle_root",
-        8 => "cardano_database_merkle_root",
+        2 => "cardano_blocks_transactions_merkle_root",
+        3 => "next_aggregate_verification_key",
+        4 => "next_protocol_parameters",
+        5 => "current_epoch",
+        6 => "latest_block_number",
+        7 => "cardano_blocks_transactions_block_number_offset",
+        8 => "cardano_stake_distribution_epoch",
+        9 => "cardano_stake_distribution_merkle_root",
+        10 => "cardano_database_merkle_root",
+        11 => "next_aggregate_verification_key_snark",
         _ => "unknown",
     }
 }

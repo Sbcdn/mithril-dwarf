@@ -50,7 +50,8 @@ pub fn verify_avk_chain(
     current_cert: &CertificateZeroCopy,
     previous_cert: &CertificateZeroCopy,
 ) -> Result<(), VerifyError> {
-    let next_avk = find_protocol_message_part(&previous_cert.protocol_message.parts, 2)
+    // `NextAggregateVerificationKey` is discriminant 3 at upstream Mithril 2617.0.
+    let next_avk = find_protocol_message_part(&previous_cert.protocol_message.parts, 3)
         .ok_or(VerifyError::NextAVKNotFound)?;
 
     let mut sink = EqSink::new(next_avk);
@@ -101,7 +102,8 @@ pub fn verify_protocol_params_chain_cross_epoch_with_pp_digest(
     previous_cert: &CertificateZeroCopy,
     pp_digest: &[u8; 32],
 ) -> Result<(), VerifyError> {
-    let next_params_hash = find_protocol_message_part(&previous_cert.protocol_message.parts, 3)
+    // `NextProtocolParameters` is discriminant 4 at upstream Mithril 2617.0.
+    let next_params_hash = find_protocol_message_part(&previous_cert.protocol_message.parts, 4)
         .ok_or(VerifyError::NextProtocolParamsNotFound)?;
     let _ = current_cert; // pp_digest already encodes current_cert.metadata.
     let mut computed_hex = [0u8; 64];

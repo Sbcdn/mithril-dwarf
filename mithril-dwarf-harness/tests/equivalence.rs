@@ -998,6 +998,11 @@ fn protocol_message_part_key_discriminants_pinned() {
     // Hardcoded expected layout. If any of these triples drifts,
     // either upstream changed (update with care) or dwarf's mapping
     // table drifted (bug — investigate).
+    // Pinned to upstream Mithril 2617.0 declaration order. 2537.0 had only
+    // 9 variants (0..=8); 2617.0 inserted CardanoBlocksTransactionsMerkleRoot,
+    // CardanoBlocksTransactionsBlockNumberOffset, and NextSnarkAggregateVerificationKey,
+    // shifting every prior NextAVK / NextProtocolParameters / CurrentEpoch /
+    // LatestBlockNumber / CardanoStake* / CardanoDatabase position.
     let expected: &[(ProtocolMessagePartKey, u8, &str)] = &[
         (ProtocolMessagePartKey::SnapshotDigest, 0, "snapshot_digest"),
         (
@@ -1006,35 +1011,50 @@ fn protocol_message_part_key_discriminants_pinned() {
             "cardano_transactions_merkle_root",
         ),
         (
-            ProtocolMessagePartKey::NextAggregateVerificationKey,
+            ProtocolMessagePartKey::CardanoBlocksTransactionsMerkleRoot,
             2,
+            "cardano_blocks_transactions_merkle_root",
+        ),
+        (
+            ProtocolMessagePartKey::NextAggregateVerificationKey,
+            3,
             "next_aggregate_verification_key",
         ),
         (
             ProtocolMessagePartKey::NextProtocolParameters,
-            3,
+            4,
             "next_protocol_parameters",
         ),
-        (ProtocolMessagePartKey::CurrentEpoch, 4, "current_epoch"),
+        (ProtocolMessagePartKey::CurrentEpoch, 5, "current_epoch"),
         (
             ProtocolMessagePartKey::LatestBlockNumber,
-            5,
+            6,
             "latest_block_number",
         ),
         (
+            ProtocolMessagePartKey::CardanoBlocksTransactionsBlockNumberOffset,
+            7,
+            "cardano_blocks_transactions_block_number_offset",
+        ),
+        (
             ProtocolMessagePartKey::CardanoStakeDistributionEpoch,
-            6,
+            8,
             "cardano_stake_distribution_epoch",
         ),
         (
             ProtocolMessagePartKey::CardanoStakeDistributionMerkleRoot,
-            7,
+            9,
             "cardano_stake_distribution_merkle_root",
         ),
         (
             ProtocolMessagePartKey::CardanoDatabaseMerkleRoot,
-            8,
+            10,
             "cardano_database_merkle_root",
+        ),
+        (
+            ProtocolMessagePartKey::NextSnarkAggregateVerificationKey,
+            11,
+            "next_aggregate_verification_key_snark",
         ),
     ];
 
@@ -1071,12 +1091,10 @@ fn protocol_message_part_key_discriminants_pinned() {
         );
     }
 
-    // Exhaustiveness check: dwarf must return "unknown" for ALL
-    // discriminants outside 0..=8. Pin the unknown-fallback too so any
-    // future expansion of the upstream enum (which would add a new
-    // discriminant value) trips here before silently hashing "unknown"
-    // for valid input.
-    for d in 9u8..=255 {
+    // Exhaustiveness: dwarf must return "unknown" for ALL discriminants
+    // outside 0..=11. Pin the unknown-fallback so any future upstream
+    // expansion trips here before silently hashing "unknown" for valid input.
+    for d in 12u8..=255 {
         let s = protocol_message_key_to_string(d);
         assert_eq!(
             s, "unknown",
@@ -1219,6 +1237,7 @@ fn corpus_diversity_report() {
             SignedEntityType::CardanoImmutableFilesFull(_) => "CardanoImmutableFilesFull",
             SignedEntityType::CardanoTransactions(_, _) => "CardanoTransactions",
             SignedEntityType::CardanoDatabase(_) => "CardanoDatabase",
+            SignedEntityType::CardanoBlocksTransactions(_, _, _) => "CardanoBlocksTransactions",
         };
         *entity_type_counts.entry(label.to_string()).or_insert(0) += 1;
     }
@@ -1416,6 +1435,11 @@ fn signed_entity_type_discriminant_pinned() {
     // Pinned (variant, expected_discriminant) per upstream
     // declaration order. Synthetic field values chosen to be
     // unmistakable in the hashed bytes.
+    // 2617.0 adds CardanoBlocksTransactions at declaration position 5
+    // (a three-field variant). dwarf's wire format does not yet support
+    // it (the host serializer panics), so the harness omits it from the
+    // round-trip cases below; the discriminant value is still pinned via
+    // the explicit assertion further down.
     let cases: &[(SignedEntityType, u8, &str)] = &[
         (
             SignedEntityType::MithrilStakeDistribution(Epoch(100)),
@@ -1547,6 +1571,11 @@ fn signed_entity_type_feed_hash_bytes_pinned() {
             SignedEntityType::CardanoTransactions(epoch, block_number) => {
                 hasher.update(&epoch.to_be_bytes());
                 hasher.update(&block_number.to_be_bytes());
+            }
+            SignedEntityType::CardanoBlocksTransactions(_, _, _) => {
+                panic!(
+                    "test does not yet exercise CardanoBlocksTransactions (added in Mithril 2617.0)"
+                );
             }
         }
     };
@@ -1756,10 +1785,15 @@ fn cross_impl_chain_verification() {
         .map(|b| certificate_from_bytes(b).expect("dwarf parse chain cert"))
         .collect();
 
+    // Pick the genesis VK for whatever network the chain actually lives
+    // on (the longest linear chain may be mainnet OR preprod depending
+    // on which network's fetch reached genesis first).
+    let chain_genesis_vk_hex = genesis_vk_for_cert(longest_chain.last().unwrap())
+        .expect("network supported by genesis_vk_for_cert");
     let genesis_vk_bytes: [u8; 32] = {
         use mithril_common::crypto_helper::ed25519::Ed25519VerificationKey;
-        Ed25519VerificationKey::from_json_hex(MAINNET_GENESIS_VK_HEX)
-            .expect("mainnet genesis VK parses")
+        Ed25519VerificationKey::from_json_hex(chain_genesis_vk_hex)
+            .expect("chain genesis VK parses")
             .as_ref()
             .try_into()
             .expect("Ed25519 VK is 32 bytes")
@@ -1801,8 +1835,8 @@ fn cross_impl_chain_verification() {
         slog::Logger::root(slog::Discard, slog::o!()),
         Arc::new(retriever),
     );
-    let genesis_vk_strict = ProtocolGenesisVerificationKey::from_json_hex(MAINNET_GENESIS_VK_HEX)
-        .expect("mainnet genesis VK parses (strict)");
+    let genesis_vk_strict = ProtocolGenesisVerificationKey::from_json_hex(chain_genesis_vk_hex)
+        .expect("chain genesis VK parses (strict)");
 
     let upstream_positive = tokio::runtime::Builder::new_current_thread()
         .enable_all()
