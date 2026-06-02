@@ -131,3 +131,7 @@ name = "equivalence_performance"
 harness = false
 required-features = ["host"]
 
+[[bench]]
+name = "ed25519_strict"
+harness = false
+

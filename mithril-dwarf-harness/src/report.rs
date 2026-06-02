@@ -39,11 +39,11 @@ pub struct ReportSummary {
     /// actually adversarial. Fails the test.
     pub mutations_insufficient: usize,
     /// Mithril rejected, dwarf accepted — but the mutation is tagged
-    /// as a **known intentional divergence** (currently only
-    /// `Ed25519MalleabilityTwin`, reflecting dwarf's cycle-saving
-    /// non-strict ed25519 verify). Does NOT fail the test — the
-    /// counter exists so the cost-of-safety tradeoff is visible in
-    /// every harness run.
+    /// as a **known intentional divergence** approved at design time.
+    /// Does NOT fail the test; the counter exists so the cost-of-safety
+    /// tradeoff is visible in every harness run. No variants are
+    /// currently classified here (the `Mutation::is_intentional_divergence`
+    /// bucket is reserved for future use).
     pub mutations_intentional_divergence: usize,
 }
 
@@ -108,7 +108,7 @@ pub fn render_report(audits: &[CertAudit], mutated: &[CertAudit]) -> (String, Re
                                      (security contract satisfied, surfaced for visibility)\n\
              - INTENTIONAL DIVERGENCE Mithril rejected, dwarf accepted, BY DESIGN\n\
                                      (cycle-saving tradeoff explicitly approved at\n\
-                                      design time, e.g. non-strict ed25519 verify)\n\n",
+                                      design time; no variants currently classified here)\n\n",
         );
 
         for a in mutated {

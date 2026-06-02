@@ -203,26 +203,13 @@ pub enum Mutation {
     // -----------------------------------------------------------------
     // Intentional-divergence mutations — RESERVED.
     //
-    // Reserved for KNOWN tradeoffs where dwarf accepts what upstream
+    // Reserved for known tradeoffs where dwarf accepts what upstream
     // Mithril rejects, for cycle savings approved at design time. The
     // harness counts such cases in a distinct
     // `mutations_intentional_divergence` bucket rather than flagging
-    // them as CRITICAL false positives.
-    //
-    // No variants are currently defined — an earlier draft included
-    // `Ed25519MalleabilityTwin` (replace `s` with `s + L`) on the
-    // theory that dwarf's non-strict `vk.verify` would accept where
-    // upstream's `verify_strict` would reject. Empirically that does
-    // not happen: `ed25519-dalek` 2.1.1's non-strict `vk.verify` also
-    // routes through `Scalar::from_canonical_bytes(s)` which rejects
-    // any `s >= L`. The real `verify` vs `verify_strict` difference in
-    // dalek 2.x is the post-canonicality subgroup check on `R` (and
-    // `A`/the vk); constructing a twin that exploits that requires
-    // either a maliciously crafted public key (not our threat model —
-    // genesis VK is fixed) or breaking ed25519. So dwarf's non-strict
-    // verify is operationally equivalent to `verify_strict` for the
-    // mainnet genesis signature path. The bucket is preserved so a
-    // future genuine divergence can be added cleanly.
+    // them as CRITICAL false positives. No variants are currently
+    // defined; the bucket is preserved so a future genuine divergence
+    // can be added cleanly.
     // -----------------------------------------------------------------
 }
 

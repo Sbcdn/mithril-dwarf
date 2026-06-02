@@ -145,7 +145,7 @@ cargo run  -p mithril-dwarf-harness --bin audit
 
 ### Intentional divergences
 
-Five places where dwarf's observable behaviour differs from upstream (e.g. ed25519 `verify` vs `verify_strict`, BLS identity rejected at pairing time rather than at deserialise, asymmetric epoch-chaining) are documented and pin-tested in [`tests/intentional_divergences.rs`](mithril-dwarf-harness/tests/intentional_divergences.rs). Each is verdict-equivalent on real chains; a corpus-wide gate catches any future change that breaks that equivalence.
+Four places where dwarf's observable behaviour differs from upstream (BLS identity rejected at pairing time rather than at deserialise, asymmetric epoch-chaining, usize-vs-u64 BLS scalar index width, bytewise NextAvk chain compare) are documented and pin-tested in [`tests/intentional_divergences.rs`](mithril-dwarf-harness/tests/intentional_divergences.rs). Each is verdict-equivalent on real chains; a corpus-wide gate catches any future change that breaks that equivalence.
 
 ### Upstream drift CI
 

@@ -86,14 +86,8 @@ pub fn mithril_epoch_matches_protocol_message(cert: &Certificate) -> CheckResult
 /// `MithrilCertificateVerifier::verify_genesis_certificate` does:
 /// `ProtocolGenesisVerificationKey::verify(signed_message_bytes,
 /// genesis_signature)`, which internally is
-/// `ed25519_dalek::VerifyingKey::verify_strict`.
-///
-/// NOTE: dwarf's `verify_ed25519_signature` deliberately uses the
-/// non-strict `.verify()` to save cycles inside the zkVM. The malleability
-/// gap is a documented, intentional cost/security tradeoff — not a bug.
-/// On a legitimately-signed corpus (which is what the test data is) the
-/// two paths agree; only a constructed malleability twin would surface
-/// the divergence.
+/// `ed25519_dalek::VerifyingKey::verify_strict`. Dwarf now matches
+/// (see `verify_ed25519_signature`).
 pub fn mithril_ed25519_verify(
     cert: &Certificate,
     genesis_vk: &ProtocolGenesisVerificationKey,

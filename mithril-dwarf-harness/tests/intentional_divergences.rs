@@ -14,11 +14,15 @@
 //! | # | Divergence                                              | Layer     | Verdict-equivalent? |
 //! |---|---------------------------------------------------------|-----------|---------------------|
 //! | 1 | BLS identity-point defence layer                        | crypto    | Yes (pinned)        |
-//! | 2 | Ed25519 non-strict verify                               | crypto    | Yes (empirical)     |
 //! | 3 | `verify_epoch_chaining` direction asymmetry             | check     | Conditionally       |
 //! | 4 | Check ordering in `verify_standard_certificate`         | orchestr. | Yes (top-level)     |
 //! | 5 | usize-vs-u64 BLS scalar index width on RISC0            | platform  | Yes (BLS math)      |
 //! | 6 | NextAvk chain compare: bytewise vs structural           | check     | On real chains      |
+//!
+//! Closed divergences (kept here for audit trail):
+//! - #2 — Ed25519 non-strict verify. Aligned with upstream by switching
+//!   to `verify_strict` at the genesis-cert call site; measured cost
+//!   ~74k host cycles per chain (one call per chain, genesis-only).
 
 use mithril_dwarf::certificate_verification::VerifyError;
 use mithril_dwarf_harness::{
@@ -65,53 +69,6 @@ fn divergence_1_bls_identity_defence_layer_pinned() {
         PublicKey::from_bytes(&g2_identity).is_ok(),
         "blst tightened identity rejection at PublicKey::from_bytes; \
          update the registry"
-    );
-}
-
-// Divergence #2 — Ed25519 non-strict verify (vs upstream's `verify_strict`)
-//
-// Dwarf calls `ed25519_dalek::VerifyingKey::verify` (mod.rs); upstream
-// calls `verify_strict` via `ProtocolGenesisVerificationKey::verify`.
-// `verify_strict` adds subgroup checks on `R` / `A`; the non-strict path
-// skips them for cycle savings.
-//
-// Under `ed25519-dalek` 2.1.1 both paths route through
-// `Scalar::from_canonical_bytes(s)`, which rejects any `s >= L`, so the
-// malleability twin (`s + L`) is rejected by both — verdicts match. The
-// pin catches a future dalek bump that loosens the non-strict path.
-
-/// Pin: dalek 2.x rejects `s >= L` in both `verify` and `verify_strict`.
-#[test]
-fn divergence_2_ed25519_non_strict_pinned() {
-    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-
-    // Construct an arbitrary signature where s >= L. The Ed25519 group
-    // order L is `2^252 + 27742317777372353535851937790883648493`. Any
-    // 32-byte value with bit 254 set and lower bits high enough exceeds
-    // L. For the pin we use s = 2^255 - 1 (all-ones), which is well
-    // above L and is the canonical "out-of-range" representative.
-    let mut sig_bytes = [0u8; 64];
-    sig_bytes[..32].fill(0u8); // R = any 32 bytes (we don't care about the point validity here)
-    sig_bytes[32..].fill(0xFFu8); // s = 0xFF...FF, which is >= L
-    let sig = Signature::from_bytes(&sig_bytes);
-
-    // Point validity of `R` / `A` is irrelevant; the assertion turns
-    // entirely on the scalar canonicality check.
-    let vk_bytes: [u8; 32] = [
-        0xed, 0x4d, 0xc2, 0x46, 0x3a, 0x65, 0xa8, 0x70, 0x07, 0x4a, 0xd6, 0x6e, 0xa9, 0x66, 0x2a,
-        0x76, 0xee, 0xed, 0x5c, 0x4f, 0xfb, 0x73, 0xdc, 0x4d, 0x49, 0xb7, 0x80, 0x12, 0xfd, 0x42,
-        0xe6, 0x86,
-    ];
-    let vk = VerifyingKey::from_bytes(&vk_bytes).expect("VK construction");
-    let msg = b"divergence-2-pin";
-
-    assert!(
-        vk.verify(msg, &sig).is_err(),
-        "non-strict ed25519 verify accepts s >= L — switch dwarf to verify_strict"
-    );
-    assert!(
-        vk.verify_strict(msg, &sig).is_err(),
-        "verify_strict accepts s >= L; investigate"
     );
 }
 

@@ -2,7 +2,10 @@ pub mod certificate_verification;
 pub mod parser;
 
 #[cfg(feature = "host")]
-pub use mithril_client::{CardanoTransactionsProofs, Client, ClientBuilder};
+pub use mithril_client::{
+    AggregatorDiscoveryType, CardanoTransactionsProofs, Client, ClientBuilder,
+    GenesisVerificationKey,
+};
 #[cfg(feature = "host")]
 pub use mithril_common::{
     certificate_chain::{

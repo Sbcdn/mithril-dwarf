@@ -120,10 +120,11 @@ pub struct CertAudit {
     pub full_verify: CheckComparison,
     /// `true` if this audit corresponds to a mutation that is **known**
     /// to produce a `(mithril_rejects, dwarf_accepts)` divergence by
-    /// design (current sole case: `Ed25519MalleabilityTwin` — dwarf's
-    /// cycle-saving non-strict ed25519 verify). The report + test
-    /// contract treat such outcomes as an **expected, documented**
-    /// divergence rather than a CRITICAL false positive.
+    /// design. The report + test contract treat such outcomes as an
+    /// **expected, documented** divergence rather than a CRITICAL
+    /// false positive. No mutation variants are currently classified
+    /// here; the field is preserved so future divergences can be
+    /// added cleanly.
     pub mutation_intentionally_diverges: bool,
 }
 
