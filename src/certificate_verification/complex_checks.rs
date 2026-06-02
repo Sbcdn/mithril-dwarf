@@ -127,6 +127,18 @@ pub fn verify_bls_multisig(cert: &CertificateZeroCopy) -> Result<(), VerifyError
         SignatureBasicZeroCopy::Genesis { .. } => return Ok(()),
     };
 
+    // `aggregate_signatures_and_keys` hashes each signer's iteration
+    // index as `usize.to_be_bytes()`. On RISC0 (RV32) `usize = u32`,
+    // so indices >= 2^32 would alias. The realistic memory ceiling
+    // bars this in practice; the assert pins the assumption (see
+    // divergence #5). Comparison is `as u64` so RV32's narrower usize
+    // does not turn `1u64 << 32` into 0.
+    assert!(
+        (multi_sig.signatures.len() as u64) < (1u64 << 32),
+        "BLS multi-signature carries {} signers; must be < 2^32",
+        multi_sig.signatures.len(),
+    );
+
     let msgp = prepare_message_with_root(cert.signed_message, &cert.aggregate_verification_key)?;
 
     let phi_f = cert.metadata.phi_f;
