@@ -159,15 +159,16 @@ pub fn verify_certificate_chain(
     Ok(())
 }
 
-/// Non-strict `verify`; `verify_strict` is empirically equivalent under
-/// `ed25519-dalek` 2.x against malleability twins (both route through
-/// `Scalar::from_canonical_bytes`). Pinned by the divergence registry.
+/// Aligned with upstream `ProtocolGenesisVerificationKey::verify` —
+/// `verify_strict` adds small-order checks on R / A and uses the
+/// un-cofactored equation. Genesis-only path; +~74k host cycles per
+/// chain (measured, `benches/ed25519_strict.rs`).
 fn verify_ed25519_signature(
     message: &[u8],
     signature: &[u8],
     public_key: &[u8; 32],
 ) -> Result<(), VerifyError> {
-    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    use ed25519_dalek::{Signature, VerifyingKey};
 
     if signature.len() != 64 {
         return Err(VerifyError::InvalidGenesisSignature);
@@ -181,7 +182,7 @@ fn verify_ed25519_signature(
     let vk =
         VerifyingKey::from_bytes(public_key).map_err(|_| VerifyError::InvalidGenesisSignature)?;
 
-    vk.verify(message, &sig)
+    vk.verify_strict(message, &sig)
         .map_err(|_| VerifyError::Ed25519VerificationFailed)?;
 
     Ok(())
@@ -194,5 +195,23 @@ mod tests {
     #[test]
     fn verify_error_fits_in_4_bytes() {
         assert!(core::mem::size_of::<VerifyError>() <= 4);
+    }
+
+    /// Regression pin: ed25519 path must reject a small-order public
+    /// key (identity point). `verify_strict` enforces this via
+    /// `is_small_order()`; legacy `verify` would accept a crafted
+    /// `(R=identity, s=0)` signature. Fails if the call site reverts to
+    /// non-strict.
+    #[test]
+    fn ed25519_rejects_small_order_public_key() {
+        let mut identity_vk = [0u8; 32];
+        identity_vk[0] = 0x01;
+        let mut sig_bytes = [0u8; 64];
+        sig_bytes[0] = 0x01;
+        assert!(matches!(
+            verify_ed25519_signature(b"small-order pin", &sig_bytes, &identity_vk),
+            Err(VerifyError::Ed25519VerificationFailed)
+                | Err(VerifyError::InvalidGenesisSignature)
+        ));
     }
 }
