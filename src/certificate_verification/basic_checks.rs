@@ -3,8 +3,8 @@
 use super::VerifyError;
 use crate::parser::CertificateZeroCopy;
 
-/// `ProtocolMessagePartKey::CurrentEpoch` discriminant.
-const CURRENT_EPOCH: u8 = 4;
+/// `ProtocolMessagePartKey::CurrentEpoch` discriminant at upstream Mithril 2617.0.
+const CURRENT_EPOCH: u8 = 5;
 
 #[inline]
 pub fn verify_not_infinite_loop(cert: &CertificateZeroCopy) -> Result<(), VerifyError> {

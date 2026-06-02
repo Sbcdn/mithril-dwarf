@@ -57,7 +57,7 @@ fn bench_mithril_verification_debug() {
         }
     }
 
-    black_box(result);
+    let _ = black_box(result);
 }
 
 #[library_benchmark]
@@ -79,7 +79,7 @@ fn bench_mithril_full_verification() {
             .await
     });
 
-    black_box(result);
+    let _ = black_box(result);
 }
 
 #[library_benchmark]
@@ -97,7 +97,7 @@ fn bench_mithril_verification_only() {
             .await
     });
 
-    black_box(result);
+    let _ = black_box(result);
 }
 
 #[library_benchmark]
@@ -105,7 +105,7 @@ fn bench_mithril_hash_only() {
     let cert = &MITHRIL_CERTS.0;
     let computed_hash = black_box(cert.compute_hash());
     let result = computed_hash == cert.hash;
-    black_box(result);
+    let _ = black_box(result);
 }
 
 #[library_benchmark]
@@ -114,12 +114,20 @@ fn bench_mithril_bls_only() {
     if let mithril_common::entities::CertificateSignature::MultiSignature(_, multi_sig) =
         &cert.signature
     {
+        // `cert.aggregate_verification_key` is the concatenation-only wrapper at
+        // upstream 2617.0; lift it into the full `AggregateVerificationKey` enum
+        // that `multi_sig.verify` expects.
+        let avk = mithril_stm::AggregateVerificationKey::new(
+            (*cert.aggregate_verification_key).clone(),
+            #[cfg(feature = "future_snark")]
+            None,
+        );
         let result = multi_sig.verify(
             black_box(cert.signed_message.as_bytes()),
-            black_box(&cert.aggregate_verification_key),
+            black_box(&avk),
             black_box(&cert.metadata.protocol_parameters.clone().into()),
         );
-        black_box(result);
+        let _ = black_box(result);
     }
 }
 
@@ -130,7 +138,7 @@ fn bench_our_parsing_only() {
     // JUST parsing - ~500K instructions
     let cert = certificate_from_bytes(black_box(OUR_CERT_BYTES));
     let prev = certificate_from_bytes(black_box(OUR_PREV_BYTES));
-    black_box((cert, prev));
+    let _ = black_box((cert, prev));
 }
 
 #[library_benchmark]
@@ -140,7 +148,7 @@ fn bench_our_full_verification() {
     let prev = certificate_from_bytes(OUR_PREV_BYTES).unwrap();
 
     let result = verify_standard_certificate(black_box(&cert), black_box(&prev));
-    black_box(result);
+    let _ = black_box(result);
 }
 
 #[library_benchmark]
@@ -151,7 +159,7 @@ fn bench_our_verification_only() {
 
     // JUST verification (what we measure)
     let result = verify_standard_certificate(black_box(&cert), black_box(&prev));
-    black_box(result);
+    let _ = black_box(result);
 }
 
 #[library_benchmark]
@@ -166,7 +174,7 @@ fn bench_our_basic_checks() {
         .and_then(|_| verify_epoch_chaining(black_box(&cert), black_box(&prev)))
         .and_then(|_| verify_previous_hash_matches(black_box(&cert), black_box(&prev)));
 
-    black_box(result);
+    let _ = black_box(result);
 }
 
 #[library_benchmark]
@@ -178,7 +186,7 @@ fn bench_our_medium_checks() {
     let result = verify_hash_matches_content(black_box(&cert))
         .and_then(|_| verify_signed_message_matches_protocol(black_box(&cert)));
 
-    black_box(result);
+    let _ = black_box(result);
 }
 
 #[library_benchmark]
@@ -191,7 +199,7 @@ fn bench_our_chain_checks() {
     let result = verify_avk_chain(black_box(&cert), black_box(&prev))
         .and_then(|_| verify_protocol_params_chain(black_box(&cert), black_box(&prev)));
 
-    black_box(result);
+    let _ = black_box(result);
 }
 
 #[library_benchmark]
@@ -200,7 +208,7 @@ fn bench_our_bls_only() {
 
     use mithril_dwarf::certificate_verification::complex_checks::*;
     let result = verify_bls_multisig(black_box(&cert));
-    black_box(result);
+    let _ = black_box(result);
 }
 
 // Per-check benchmarks for profiling.
@@ -211,7 +219,7 @@ fn bench_check_infinite_loop() {
 
     use mithril_dwarf::certificate_verification::basic_checks::*;
     let result = verify_not_infinite_loop(black_box(&cert));
-    black_box(result);
+    let _ = black_box(result);
 }
 
 #[library_benchmark]
@@ -220,7 +228,7 @@ fn bench_check_epoch_matches() {
 
     use mithril_dwarf::certificate_verification::basic_checks::*;
     let result = verify_epoch_matches_protocol_message(black_box(&cert));
-    black_box(result);
+    let _ = black_box(result);
 }
 
 #[library_benchmark]
@@ -230,7 +238,7 @@ fn bench_check_epoch_chaining() {
 
     use mithril_dwarf::certificate_verification::basic_checks::*;
     let result = verify_epoch_chaining(black_box(&cert), black_box(&prev));
-    black_box(result);
+    let _ = black_box(result);
 }
 
 #[library_benchmark]
@@ -240,7 +248,7 @@ fn bench_check_previous_hash() {
 
     use mithril_dwarf::certificate_verification::basic_checks::*;
     let result = verify_previous_hash_matches(black_box(&cert), black_box(&prev));
-    black_box(result);
+    let _ = black_box(result);
 }
 
 #[library_benchmark]
@@ -249,7 +257,7 @@ fn bench_check_hash_matches() {
 
     use mithril_dwarf::certificate_verification::medium_checks::*;
     let result = verify_hash_matches_content(black_box(&cert));
-    black_box(result);
+    let _ = black_box(result);
 }
 
 #[library_benchmark]
@@ -258,7 +266,7 @@ fn bench_check_signed_message() {
 
     use mithril_dwarf::certificate_verification::medium_checks::*;
     let result = verify_signed_message_matches_protocol(black_box(&cert));
-    black_box(result);
+    let _ = black_box(result);
 }
 
 #[library_benchmark]
@@ -268,7 +276,7 @@ fn bench_check_avk_chain() {
 
     use mithril_dwarf::certificate_verification::complex_checks::*;
     let result = verify_avk_chain(black_box(&cert), black_box(&prev));
-    black_box(result);
+    let _ = black_box(result);
 }
 
 #[library_benchmark]
@@ -278,7 +286,7 @@ fn bench_check_protocol_params() {
 
     use mithril_dwarf::certificate_verification::complex_checks::*;
     let result = verify_protocol_params_chain(black_box(&cert), black_box(&prev));
-    black_box(result);
+    let _ = black_box(result);
 }
 
 // Mock retriever for the upstream verifier.

@@ -12,17 +12,22 @@ use mithril_client::common::{
     ProtocolParameters, SignedEntityType,
 };
 use mithril_common::{
-    crypto_helper::{ProtocolAggregateVerificationKey, ProtocolKey, ProtocolMultiSignature},
+    crypto_helper::{
+        ProtocolAggregateVerificationKeyForConcatenation, ProtocolKey, ProtocolMembershipDigest,
+        ProtocolMultiSignature,
+    },
     entities::{Certificate, CertificateMetadata, CertificateSignature, StakeDistributionParty},
 };
 use mithril_stm::{
-    AggregateSignature, AggregateVerificationKey, BlsSignature, BlsVerificationKey,
-    MerkleBatchPath, MerkleTreeBatchCommitment, MerkleTreeLeaf, SingleSignature,
-    SingleSignatureWithRegisteredParty,
+    AggregateSignature, AggregateVerificationKeyForConcatenation, BlsSignature, BlsVerificationKey,
+    ClosedRegistrationEntry, ConcatenationProof, MembershipDigest, MerkleBatchPath,
+    MerkleTreeBatchCommitment, MerkleTreeConcatenationLeaf, SingleSignature,
+    SingleSignatureForConcatenation, SingleSignatureWithRegisteredParty,
 };
 use std::collections::BTreeMap;
 
-type D = blake2::Blake2b<blake2::digest::consts::U32>;
+type D = ProtocolMembershipDigest;
+type ConcatHash = <D as MembershipDigest>::ConcatenationHash;
 
 /// Validate `bytes` as UTF-8 and return the owned `String`. Host-only
 /// path, so the cost of validation doesn't matter; the error
@@ -112,16 +117,20 @@ fn reconstruct_protocol_message_fast(
 fn protocol_message_key_from_discriminant(
     discriminant: u8,
 ) -> Result<ProtocolMessagePartKey, anyhow::Error> {
+    // Discriminants match upstream Mithril 2617.0 declaration order.
     match discriminant {
         0 => Ok(ProtocolMessagePartKey::SnapshotDigest),
         1 => Ok(ProtocolMessagePartKey::CardanoTransactionsMerkleRoot),
-        2 => Ok(ProtocolMessagePartKey::NextAggregateVerificationKey),
-        3 => Ok(ProtocolMessagePartKey::NextProtocolParameters),
-        4 => Ok(ProtocolMessagePartKey::CurrentEpoch),
-        5 => Ok(ProtocolMessagePartKey::LatestBlockNumber),
-        6 => Ok(ProtocolMessagePartKey::CardanoStakeDistributionEpoch),
-        7 => Ok(ProtocolMessagePartKey::CardanoStakeDistributionMerkleRoot),
-        8 => Ok(ProtocolMessagePartKey::CardanoDatabaseMerkleRoot),
+        2 => Ok(ProtocolMessagePartKey::CardanoBlocksTransactionsMerkleRoot),
+        3 => Ok(ProtocolMessagePartKey::NextAggregateVerificationKey),
+        4 => Ok(ProtocolMessagePartKey::NextProtocolParameters),
+        5 => Ok(ProtocolMessagePartKey::CurrentEpoch),
+        6 => Ok(ProtocolMessagePartKey::LatestBlockNumber),
+        7 => Ok(ProtocolMessagePartKey::CardanoBlocksTransactionsBlockNumberOffset),
+        8 => Ok(ProtocolMessagePartKey::CardanoStakeDistributionEpoch),
+        9 => Ok(ProtocolMessagePartKey::CardanoStakeDistributionMerkleRoot),
+        10 => Ok(ProtocolMessagePartKey::CardanoDatabaseMerkleRoot),
+        11 => Ok(ProtocolMessagePartKey::NextSnarkAggregateVerificationKey),
         _ => Err(anyhow!("Unknown protocol message key: {}", discriminant)),
     }
 }
@@ -129,18 +138,14 @@ fn protocol_message_key_from_discriminant(
 #[inline]
 fn reconstruct_aggregate_verification_key(
     parsed: AggregateVerificationKeyParsed,
-) -> Result<ProtocolAggregateVerificationKey, anyhow::Error> {
-    use blake2::Blake2b;
-    use blake2::digest::consts::U32;
-
-    type D = Blake2b<U32>;
-
-    let mt_commitment = MerkleTreeBatchCommitment::<D>::new(
+) -> Result<ProtocolAggregateVerificationKeyForConcatenation, anyhow::Error> {
+    let mt_commitment = MerkleTreeBatchCommitment::<ConcatHash, MerkleTreeConcatenationLeaf>::new(
         parsed.root.to_vec(),
         parsed.nr_leaves as usize,
     );
-    let avk = AggregateVerificationKey::<D>::new(mt_commitment, parsed.total_stake);
-    Ok(ProtocolKey::new(avk))
+    let concat_avk =
+        AggregateVerificationKeyForConcatenation::<D>::new(mt_commitment, parsed.total_stake);
+    Ok(ProtocolKey::new(concat_avk))
 }
 
 #[inline]
@@ -158,18 +163,29 @@ fn reconstruct_multi_signature(
         })?;
 
         // Materialise the borrowed index slice into a Vec at the host boundary.
-        let sig = SingleSignature {
-            sigma,
-            indexes: sig_parsed.indexes().collect(),
-            signer_index: sig_parsed.signer_index,
-        };
-        let reg_party = MerkleTreeLeaf(vk, sig_parsed.stake);
+        let concat_sig =
+            SingleSignatureForConcatenation::new(sigma, sig_parsed.indexes().collect());
+        let sig = SingleSignature::new(
+            concat_sig,
+            sig_parsed.signer_index,
+            #[cfg(feature = "future_snark")]
+            None,
+        );
+        let reg_party = ClosedRegistrationEntry::new(
+            vk,
+            sig_parsed.stake,
+            #[cfg(feature = "future_snark")]
+            None,
+            #[cfg(feature = "future_snark")]
+            None,
+        );
         signatures.push(SingleSignatureWithRegisteredParty { sig, reg_party });
     }
 
-    let batch_proof = MerkleBatchPath::<D>::from_bytes(parsed.batch_proof_bytes)
+    let batch_proof = MerkleBatchPath::<ConcatHash>::from_bytes(parsed.batch_proof_bytes)
         .map_err(|e| anyhow!("batch proof: {:?}", e))?;
-    let aggregate_sig = AggregateSignature::<D>::new(signatures, batch_proof);
+    let concat_proof = ConcatenationProof::<D>::new(signatures, batch_proof);
+    let aggregate_sig = AggregateSignature::<D>::Concatenation(Box::new(concat_proof));
     Ok(ProtocolKey::new(aggregate_sig))
 }
 

@@ -3,7 +3,9 @@
 
 use chrono::{DateTime, Utc};
 use mithril_client::common::{ProtocolMessage, SignedEntityType};
-use mithril_common::crypto_helper::{ProtocolAggregateVerificationKey, ProtocolMultiSignature};
+use mithril_common::crypto_helper::{
+    ProtocolAggregateVerificationKeyForConcatenation, ProtocolMultiSignature,
+};
 use mithril_common::entities::{Certificate, CertificateMetadata, CertificateSignature};
 // `BlsSignature` / `BlsVerificationKey` need mithril-stm's `benchmark-internals` feature.
 use mithril_stm::{BlsSignature, BlsVerificationKey};
@@ -140,11 +142,11 @@ fn write_protocol_message(writer: &mut ByteWriter, message: &ProtocolMessage) {
 #[inline]
 fn write_aggregate_verification_key(
     writer: &mut ByteWriter,
-    avk: &ProtocolAggregateVerificationKey,
+    avk: &ProtocolAggregateVerificationKeyForConcatenation,
 ) {
-    let avk_inner = &**avk;
-    let mt_commitment = avk_inner.get_mt_commitment();
-    let total_stake = avk_inner.get_total_stake();
+    let concat_avk = &**avk;
+    let mt_commitment = concat_avk.get_mt_commitment();
+    let total_stake = concat_avk.get_total_stake();
 
     writer.write_bytes(&mt_commitment.root);
     writer.write_u64(mt_commitment.nr_leaves() as u64);
@@ -157,28 +159,51 @@ fn write_aggregate_verification_key(
 #[inline]
 fn write_multi_signature_optimal(writer: &mut ByteWriter, multi_sig: &ProtocolMultiSignature) {
     let agg_sig = &**multi_sig;
-    let signatures = agg_sig.signatures();
+    let concat = match agg_sig {
+        mithril_stm::AggregateSignature::Concatenation(c) => c.as_ref(),
+        #[cfg(feature = "future_snark")]
+        _ => panic!("mithril-dwarf does not handle SNARK certificates"),
+    };
+    let signatures = concat.signatures();
 
     writer.write_u16(signatures.len() as u16);
 
     for sig_reg in signatures {
         let sig = &sig_reg.sig;
+        let concat_sig = sig.concatenation_signature();
         let reg_party = &sig_reg.reg_party;
 
-        writer.write_blst_sig(&sig.sigma);
+        writer.write_blst_sig(concat_sig.sigma());
 
-        writer.write_u8(sig.indexes.len() as u8);
-        for &idx in &sig.indexes {
+        let indexes = concat_sig.indexes();
+        writer.write_u8(indexes.len() as u8);
+        for &idx in indexes {
             writer.write_u64(idx);
         }
 
         writer.write_u64(sig.signer_index);
-        writer.write_blst_vk(&reg_party.0);
-        writer.write_u64(reg_party.1);
+        writer.write_blst_vk(&reg_party.get_verification_key_for_concatenation());
+        writer.write_u64(reg_party.get_stake());
     }
 
-    let batch_proof_bytes = agg_sig.batch_proof.to_bytes();
-    writer.write_bytes(&batch_proof_bytes);
+    // Upstream Mithril 2617.0 switched `MerkleBatchPath::to_bytes()` to
+    // CBOR (with version prefix), but dwarf's guest-side parser still
+    // expects the legacy raw layout:
+    //     [len_v: u64 BE][len_i: u64 BE][values: 32 bytes each][indices: u64 BE each]
+    // Emit that layout directly from the path's components rather than
+    // round-tripping through the CBOR `to_bytes` form.
+    let values = concat.batch_proof.values();
+    let indices = concat.batch_proof.indices();
+    let mut legacy = Vec::with_capacity(16 + values.len() * 32 + indices.len() * 8);
+    legacy.extend_from_slice(&(values.len() as u64).to_be_bytes());
+    legacy.extend_from_slice(&(indices.len() as u64).to_be_bytes());
+    for v in values {
+        legacy.extend_from_slice(v);
+    }
+    for &i in indices {
+        legacy.extend_from_slice(&(i as u64).to_be_bytes());
+    }
+    writer.write_bytes(&legacy);
 }
 
 #[inline]
@@ -228,6 +253,12 @@ fn write_signed_entity_type(writer: &mut ByteWriter, entity_type: &SignedEntityT
             writer.write_u8(4);
             writer.write_u64(epoch.0);
             writer.write_u64(block_number.0);
+        }
+        SignedEntityType::CardanoBlocksTransactions(_, _, _) => {
+            // Added in upstream Mithril 2617.0. dwarf's wire format does
+            // not yet carry this variant; treat as a hard parse failure
+            // until the wire format and verifier are extended.
+            panic!("mithril-dwarf does not yet support CardanoBlocksTransactions");
         }
     }
 }

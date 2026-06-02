@@ -420,9 +420,15 @@ pub fn standard_mutations() -> Vec<AppliedMutation> {
         // A hash tweak on prev breaks the next cert's previous_hash link
         // and the prev cert's own hash recomputation.
         Mutation::FlipHashByte { index: 0 },
-        // JSON encoding axis on NextAvk — guards against any future
-        // drift that silently canonicalises the JSON before hashing.
-        Mutation::ReEncodePreviousNextAvkJson,
+        // NOTE: `ReEncodePreviousNextAvkJson` was removed from the active
+        // suite at upstream Mithril 2617.0. Upstream's
+        // `verify_concatenation_aggregate_verification_key_chaining` now
+        // decodes the NextAvk string structurally via
+        // `ProtocolAggregateVerificationKeyForConcatenation::try_from(&str)`
+        // and compares structurally, so a pretty-print re-encoding is
+        // accepted by upstream. dwarf still compares bytewise (stricter,
+        // safe direction for soundness); see intentional-divergence #6 in
+        // the registry.
     ];
     let mut out: Vec<AppliedMutation> = current
         .into_iter()
@@ -722,6 +728,11 @@ fn bump_entity_type_field(t: &mut SignedEntityType, delta: i64, which: EntityFie
                 *b = shift_u64(*b);
             }
         },
+        // Added in upstream Mithril 2617.0. dwarf's wire format does not
+        // yet carry this variant; mutations against it are not exercised.
+        (SignedEntityType::CardanoBlocksTransactions(_, _, _), _) => {
+            panic!("mithril-dwarf does not yet support CardanoBlocksTransactions");
+        }
     }
 }
 

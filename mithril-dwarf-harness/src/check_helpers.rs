@@ -8,7 +8,7 @@ use mithril_dwarf::parser::byte_deserializer::CertificateZeroCopy;
 /// MUST stay in sync with `CURRENT_EPOCH` in
 /// `mithril-dwarf/src/certificate_verification/basic_checks.rs`.
 /// Both are derived from the writer in `src/parser/byte_deserializer.rs`.
-pub const CURRENT_EPOCH_DISCRIMINANT: u8 = 4;
+pub const CURRENT_EPOCH_DISCRIMINANT: u8 = 5;
 
 /// Decode a SHA-256 hex string into bytes. A successful decode produces
 /// the 32 raw digest bytes prefixed with `0x00`; a failure produces the

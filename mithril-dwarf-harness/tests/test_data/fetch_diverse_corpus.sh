@@ -80,11 +80,11 @@ echo "  CardanoStakeDistribution:  ${H_CSD:-<not found>}"
 # by Part 2 Step 2a audit; expanding to ≥4 each gives real variant-axis
 # robustness.
 
-# CardanoDatabase: walk back from the head + fetch a few siblings.
+# CardanoDatabase: full walk to mainnet genesis (auto-stops at genesis).
 if [ -n "${H_CD:-}" ]; then
     echo
-    echo "[1/4] CardanoDatabase chain head (40 certs back)"
-    $FETCH --network mainnet --certificate-hash "$H_CD" --max-certificates 40 || true
+    echo "[1/4] CardanoDatabase chain head (full walk to genesis)"
+    $FETCH --network mainnet --certificate-hash "$H_CD" --max-certificates 50000 || true
     echo "  Sibling CardanoDatabase certs (3 more from artifact endpoint):"
     SIBLINGS=$(curl -s --max-time 30 "$AGGREGATOR/artifact/cardano-database" \
         | python3 -c "import json,sys; d=json.load(sys.stdin); print(' '.join(x['certificate_hash'] for x in d[1:4]))")
@@ -138,12 +138,12 @@ fi
 # same genesis VK (PREPROD_GENESIS_VK_HEX in corpus.rs); the harness
 # auto-selects the right key via `genesis_vk_for_cert(cert)`.
 echo
-echo "[5/5] Preprod chain (5 certs)"
+echo "[5/5] Preprod chain (100 certs — walks back to genesis)"
 PREPROD_AGG="https://aggregator.release-preprod.api.mithril.network/aggregator"
 H_PREPROD=$(curl -s --max-time 30 "$PREPROD_AGG/certificates" \
     | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['hash'] if d else '')")
 if [ -n "$H_PREPROD" ]; then
-    $FETCH --network preprod --certificate-hash "$H_PREPROD" --max-certificates 5 || true
+    $FETCH --network preprod --certificate-hash "$H_PREPROD" --max-certificates 100 || true
 fi
 
 echo

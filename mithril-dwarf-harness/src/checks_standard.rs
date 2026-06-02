@@ -112,14 +112,23 @@ pub fn mithril_signed_message_matches_protocol_message(cert: &Certificate) -> Ch
 }
 
 pub fn mithril_multi_signature_verifies(cert: &Certificate) -> CheckResult {
+    use mithril_stm::AggregateVerificationKey;
     match &cert.signature {
         // `MultiSignature(entity_type, multi_sig)` — first field is the
         // `SignedEntityType` describing what the signature is over (e.g.
         // `MithrilStakeDistribution(epoch)`).
         CertificateSignature::MultiSignature(_, multi_sig) => {
+            // `cert.aggregate_verification_key` is the concatenation-only
+            // wrapper at upstream 2617.0; lift it into the full
+            // `AggregateVerificationKey` enum that `verify` expects.
+            let avk = AggregateVerificationKey::new(
+                (*cert.aggregate_verification_key).clone(),
+                #[cfg(feature = "future_snark")]
+                None,
+            );
             match multi_sig.verify(
                 cert.signed_message.as_bytes(),
-                &cert.aggregate_verification_key,
+                &avk,
                 &cert.metadata.protocol_parameters.clone().into(),
             ) {
                 Ok(()) => CheckResult::pass(Vec::new()),
