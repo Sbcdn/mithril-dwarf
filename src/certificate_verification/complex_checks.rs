@@ -333,8 +333,9 @@ fn taylor_comparison(bound: usize, cmp: Ratio512, x: &Ratio512, three: &Ratio512
         }
 
         let error_term = new_x.abs().mul(three);
-        let mut phi_plus = phi.add(&error_term);
-        let mut phi_minus = phi.add(&error_term.neg());
+        // (phi + err, phi - err) sharing the cross-multiplications: 3 wide-muls
+        // instead of 6 per Taylor iteration. Bit-identical to the two adds.
+        let (mut phi_plus, mut phi_minus) = phi.add_sub(&error_term);
 
         if phi_plus.numer.bits() > 400 || phi_plus.denom.bits() > 400 {
             phi_plus.normalize();
