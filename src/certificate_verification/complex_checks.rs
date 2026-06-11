@@ -219,9 +219,15 @@ fn preliminary_verify(
         .chain_update(msgp);
 
     for sig in &multi_sig.signatures {
-        let x_opt = c.map(|c_ref| {
+        // The Taylor-bound sequence depends only on the per-signer
+        // `x = -w*ln(1-phi_f)` and the per-cert `three`, so it is identical
+        // across all of this signer's indices. Build it once and let each
+        // index reuse the cached `(phi_plus, phi_minus)` bounds; only the
+        // `q < exp(x)` compare is per-index. `None` keeps the `phi_f == 1`
+        // short-circuit (lottery always won).
+        let mut bounds = c.map(|c_ref| {
             let w = Ratio512::from_u64(sig.stake, total_stake);
-            w.mul(c_ref).neg()
+            TaylorBounds::new(w.mul(c_ref).neg(), three)
         });
 
         for index in sig.indexes() {
@@ -230,9 +236,9 @@ fn preliminary_verify(
             }
 
             let ev = evaluate_dense_mapping_with_base(&base_hasher, index, sig.sigma_bytes);
-            let won = match &x_opt {
+            let won = match &mut bounds {
                 None => true,
-                Some(x) => is_lottery_won_with_x(ev, x, three),
+                Some(b) => b.lottery_won(lottery_q(ev)),
             };
             if !won {
                 return Err(VerifyError::LotteryLost);
@@ -283,61 +289,77 @@ fn evaluate_dense_mapping_with_base(
 
 // LOTTERY VERIFICATION
 
-/// Check if the lottery is won, given the per-signer constant
-/// `x = -w * ln(1 - phi_f)` precomputed by the caller and `ev` (the
-/// dense-mapping output) as a `U512`.
-///
-/// Mathematical background:
-/// - Lottery won if: q < exp(x)
-/// - Where: q = 2^512 / (2^512 - ev)
-///
-/// Only the `ev`-dependent `q` and the Taylor comparison run per
-/// index. The `phi_f == 1` short-circuit and the `w`/`x` derivation
-/// have been hoisted to `verify_bls_multisig` and `preliminary_verify`.
-/// `three` is also a per-cert constant — passed in so Ratio512 init
-/// doesn't happen per index.
-///
-/// # Optimizations
-///
-/// Lottery test: `q < exp(x)` where `q = 2^512 / (2^512 - ev)`.
-/// `q` is already coprime so reduction is skipped.
+/// `q = 2^512 / (2^512 - ev)` as an unreduced ratio. `ev` is the
+/// dense-mapping output; the lottery is won iff `q < exp(x)`. `q` is
+/// already coprime, so reduction is skipped (`new_raw`).
 #[inline]
-fn is_lottery_won_with_x(ev: U512, x: &Ratio512, three: &Ratio512) -> bool {
+fn lottery_q(ev: U512) -> Ratio512 {
     let ev_max = U512::MAX;
-    let denominator = ev_max.wrapping_sub(&ev);
-    let q = Ratio512::new_raw(ev_max, denominator, false);
-    taylor_comparison(1000, q, x, three)
+    Ratio512::new_raw(ev_max, ev_max.wrapping_sub(&ev), false)
 }
 
-/// `cmp < exp(x)` via Taylor series with a `3 * term` error bound.
-/// Returns false if `cmp > phi + err`, true if `cmp < phi - err`,
-/// otherwise iterates. Falls through to `false` (lottery lost) if the
-/// bound is reached without convergence.
-#[inline]
-fn taylor_comparison(bound: usize, cmp: Ratio512, x: &Ratio512, three: &Ratio512) -> bool {
-    let mut new_x = x.clone();
-    let mut phi = Ratio512::one();
-    // Factorial counter (bounded by `bound`); u64 lets `div_by_u64` scale the
-    // denominator with a single-limb multiply.
-    let mut divisor: u64 = 1;
+/// Taylor iteration ceiling; matches the historical `taylor_comparison`
+/// bound. An index that doesn't resolve within this many terms loses.
+const TAYLOR_BOUND: usize = 1000;
 
-    for _ in 0..bound {
-        phi = phi.add(&new_x);
+/// Per-signer Taylor expansion of `exp(x)` with a `3 * term` error bound.
+///
+/// The `(phi_plus, phi_minus)` bound sequence is a pure function of `x`
+/// (per-signer) and `three` (per-cert): the per-index value `q` enters
+/// only at the final compare. [`lottery_won`](Self::lottery_won) lazily
+/// extends and caches the sequence so a signer's N indices build it once
+/// instead of N times; the per-index residual is the two `q.gt`/`q.lt`
+/// cross-multiplies. Emitted bounds are bit-identical to recomputing the
+/// series per index — only the wide-mul/normalize work is shared.
+struct TaylorBounds<'a> {
+    x: Ratio512,
+    three: &'a Ratio512,
+    // Carried series state, advanced one term per `extend`.
+    new_x: Ratio512,
+    phi: Ratio512,
+    // Factorial counter; u64 lets `div_by_u64` scale the denominator with
+    // a single-limb multiply.
+    divisor: u64,
+    bounds: Vec<(Ratio512, Ratio512)>,
+}
 
-        divisor += 1;
-        new_x = new_x.mul(x).div_by_u64(divisor);
-
-        if new_x.numer.bits() > 450 || new_x.denom.bits() > 450 {
-            new_x.normalize();
+impl<'a> TaylorBounds<'a> {
+    #[inline]
+    fn new(x: Ratio512, three: &'a Ratio512) -> Self {
+        Self {
+            new_x: x.clone(),
+            x,
+            three,
+            phi: Ratio512::one(),
+            divisor: 1,
+            bounds: Vec::new(),
         }
-        if phi.numer.bits() > 450 || phi.denom.bits() > 450 {
-            phi.normalize();
+    }
+
+    /// Append the next `(phi_plus, phi_minus)` term, mirroring one
+    /// iteration of the original series. Returns `false` once
+    /// `TAYLOR_BOUND` terms exist.
+    #[inline]
+    fn extend(&mut self) -> bool {
+        if self.bounds.len() >= TAYLOR_BOUND {
+            return false;
+        }
+        self.phi = self.phi.add(&self.new_x);
+
+        self.divisor += 1;
+        self.new_x = self.new_x.mul(&self.x).div_by_u64(self.divisor);
+
+        if self.new_x.numer.bits() > 450 || self.new_x.denom.bits() > 450 {
+            self.new_x.normalize();
+        }
+        if self.phi.numer.bits() > 450 || self.phi.denom.bits() > 450 {
+            self.phi.normalize();
         }
 
-        let error_term = new_x.abs().mul(three);
+        let error_term = self.new_x.abs().mul(self.three);
         // (phi + err, phi - err) sharing the cross-multiplications: 3 wide-muls
         // instead of 6 per Taylor iteration. Bit-identical to the two adds.
-        let (mut phi_plus, mut phi_minus) = phi.add_sub(&error_term);
+        let (mut phi_plus, mut phi_minus) = self.phi.add_sub(&error_term);
 
         if phi_plus.numer.bits() > 400 || phi_plus.denom.bits() > 400 {
             phi_plus.normalize();
@@ -346,15 +368,31 @@ fn taylor_comparison(bound: usize, cmp: Ratio512, x: &Ratio512, three: &Ratio512
             phi_minus.normalize();
         }
 
-        if cmp.gt(&phi_plus) {
-            return false;
-        }
-        if cmp.lt(&phi_minus) {
-            return true;
-        }
+        self.bounds.push((phi_plus, phi_minus));
+        true
     }
 
-    false
+    /// `q < exp(x)`: walk the cached bounds, extending as needed.
+    /// `q > phi_plus` ⇒ lost, `q < phi_minus` ⇒ won; exhausting the
+    /// bound without a decision ⇒ lost. Identical verdict to running the
+    /// full series against `q` from scratch.
+    #[inline]
+    fn lottery_won(&mut self, q: Ratio512) -> bool {
+        let mut level = 0;
+        loop {
+            if level >= self.bounds.len() && !self.extend() {
+                return false;
+            }
+            let (phi_plus, phi_minus) = &self.bounds[level];
+            if q.gt(phi_plus) {
+                return false;
+            }
+            if q.lt(phi_minus) {
+                return true;
+            }
+            level += 1;
+        }
+    }
 }
 
 /// Merkle batch-proof verification. Index sortedness uses `<=` (not
@@ -573,4 +611,461 @@ fn find_protocol_message_part<'a>(
         .iter()
         .find(|(disc, _)| *disc == discriminant)
         .map(|(_, value)| *value)
+}
+
+/// Verbatim copy of the pre-cache per-index series (the production code
+/// before `TaylorBounds`). Module-scoped so both test modules share it as
+/// the regression oracle.
+#[cfg(test)]
+pub(super) fn taylor_comparison_ref(
+    bound: usize,
+    cmp: &Ratio512,
+    x: &Ratio512,
+    three: &Ratio512,
+) -> bool {
+    let mut new_x = x.clone();
+    let mut phi = Ratio512::one();
+    let mut divisor: u64 = 1;
+    for _ in 0..bound {
+        phi = phi.add(&new_x);
+        divisor += 1;
+        new_x = new_x.mul(x).div_by_u64(divisor);
+        if new_x.numer.bits() > 450 || new_x.denom.bits() > 450 {
+            new_x.normalize();
+        }
+        if phi.numer.bits() > 450 || phi.denom.bits() > 450 {
+            phi.normalize();
+        }
+        let error_term = new_x.abs().mul(three);
+        let (mut phi_plus, mut phi_minus) = phi.add_sub(&error_term);
+        if phi_plus.numer.bits() > 400 || phi_plus.denom.bits() > 400 {
+            phi_plus.normalize();
+        }
+        if phi_minus.numer.bits() > 400 || phi_minus.denom.bits() > 400 {
+            phi_minus.normalize();
+        }
+        if cmp.gt(&phi_plus) {
+            return false;
+        }
+        if cmp.lt(&phi_minus) {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod taylor_cache_tests {
+    use super::*;
+    use super::taylor_comparison_ref;
+
+    /// One cache instance, reused across many `q` (mirrors a signer with
+    /// many indices), must match a fresh reference run for each `q` — and
+    /// the result must be order-independent.
+    #[test]
+    fn cached_bounds_match_reference() {
+        let three = Ratio512::from_u64(3, 1);
+        let phis = [0.05_f64, 0.2, 0.5, 0.9];
+        let stakes: [(u64, u64); 4] = [(1, 1000), (7, 1000), (250, 1000), (999, 1000)];
+
+        // Well-distributed 512-bit `ev` values, as the real dense mapping
+        // would produce. Includes the q≈1 (ev=0) and q-huge (ev≈MAX) ends.
+        let mut evs: Vec<U512> = vec![U512::ZERO, U512::MAX, U512::MAX.wrapping_sub(&U512::ONE)];
+        for seed in 0u64..40 {
+            let d = Blake2b512::digest(seed.to_le_bytes());
+            evs.push(U512::from_le_slice(d.as_ref()));
+        }
+
+        let mut n_won = 0usize;
+        let mut n_lost = 0usize;
+        for &phi_f in &phis {
+            let c = Ratio512::from_float((1.0 - phi_f).ln()).expect("ln finite");
+            for &(stake, total) in &stakes {
+                let x = Ratio512::from_u64(stake, total).mul(&c).neg();
+                let mut cache = TaylorBounds::new(x.clone(), &three);
+                for ev in &evs {
+                    let q = lottery_q(*ev);
+                    let got = cache.lottery_won(q.clone());
+                    let want = taylor_comparison_ref(TAYLOR_BOUND, &q, &x, &three);
+                    assert_eq!(
+                        got, want,
+                        "phi_f={phi_f} stake={stake}/{total} ev={ev:?}"
+                    );
+                    if got { n_won += 1 } else { n_lost += 1 }
+                }
+            }
+        }
+        // Non-vacuity: the sweep must contain BOTH outcomes, else a bug
+        // that always returns one value would pass silently.
+        assert!(n_won > 0 && n_lost > 0, "sweep vacuous: won={n_won} lost={n_lost}");
+        eprintln!("cached_bounds_match_reference: won={n_won} lost={n_lost}");
+    }
+
+    /// Definitive bit-equality pin on PRODUCTION data: parse a real SD
+    /// cert and, for every signer's every lottery index, assert the
+    /// cached path's won/lost decision equals a from-scratch run of the
+    /// verbatim old series on the same `(q, x)`. Also forces a
+    /// deep-iteration LOST case per real `x` (q from ev≈MAX), which the
+    /// zero-stake mutation (x=0, resolves at level 0) can't reach.
+    /// Catches any divergence the positive corpus (all-won) would mask.
+    #[test]
+    fn real_cert_per_index_decisions_match_reference() {
+        use crate::parser::byte_deserializer::{certificate_from_bytes, SignatureBasicZeroCopy};
+
+        let bytes = include_bytes!("../../benches/data/cert_current.bin");
+        let cert = certificate_from_bytes(bytes).expect("parse real SD cert");
+        let multi_sig = match &cert.signature {
+            SignatureBasicZeroCopy::Multi { signature, .. } => signature,
+            _ => panic!("expected a standard multi-sig cert"),
+        };
+
+        let phi_f = cert.metadata.phi_f;
+        let total_stake = cert.aggregate_verification_key.total_stake;
+        assert!((phi_f - 1.0).abs() >= f64::EPSILON, "phi_f==1 would skip the lottery");
+        let c = Ratio512::from_float((1.0 - phi_f).ln()).expect("ln finite");
+        let three = Ratio512::from_u64(3, 1);
+
+        let msgp = prepare_message_with_root(cert.signed_message, &cert.aggregate_verification_key)
+            .expect("msgp");
+        let base = Blake2b512::new().chain_update(b"map").chain_update(&msgp);
+
+        // ev≈MAX → q huge → forced LOST on every real x (deep path).
+        let q_lost = lottery_q(U512::MAX.wrapping_sub(&U512::ONE));
+
+        let mut signers = 0usize;
+        let mut indices = 0usize;
+        let mut real_won = 0usize;
+        for sig in &multi_sig.signatures {
+            signers += 1;
+            let x = Ratio512::from_u64(sig.stake, total_stake).mul(&c).neg();
+            let mut cache = TaylorBounds::new(x.clone(), &three);
+
+            for index in sig.indexes() {
+                indices += 1;
+                let ev = evaluate_dense_mapping_with_base(&base, index, sig.sigma_bytes);
+                let q = lottery_q(ev);
+                let got = cache.lottery_won(q.clone());
+                let want = taylor_comparison_ref(TAYLOR_BOUND, &q, &x, &three);
+                assert_eq!(got, want, "signer stake={} index={index}", sig.stake);
+                if got { real_won += 1 }
+            }
+
+            // Forced-lost probe on this signer's real x, on the SAME
+            // reused cache (mirrors production reuse).
+            let got_lost = cache.lottery_won(q_lost.clone());
+            let want_lost = taylor_comparison_ref(TAYLOR_BOUND, &q_lost, &x, &three);
+            assert_eq!(got_lost, want_lost, "forced-lost mismatch, stake={}", sig.stake);
+            assert!(!want_lost, "q≈MAX must lose against exp(x>=0)");
+        }
+
+        assert!(signers > 0 && indices > 0, "no signers/indices exercised");
+        assert_eq!(real_won, indices, "a real cert's indices must all win");
+        eprintln!(
+            "real_cert_per_index: signers={signers} indices={indices} \
+             indices_per_signer={:.1}",
+            indices as f64 / signers as f64
+        );
+    }
+}
+
+/// Differential testing against a faithful re-port of upstream
+/// `mithril-stm`'s lottery (rev `7e787de`,
+/// `mithril-stm/src/proof_system/concatenation/eligibility.rs`). Two
+/// goals, kept separate on purpose:
+///
+/// 1. **Regression (airtight):** the cached path must equal the
+///    pre-cache series for EVERY input — proving the optimisation is a
+///    behavioural no-op. Asserted hard.
+/// 2. **No new upstream divergence:** the cache must agree with upstream
+///    on exactly the same inputs the old code did. Since (1) holds this
+///    is automatic, but we assert it explicitly.
+///
+/// dwarf carries two PRE-EXISTING numeric approximations vs upstream,
+/// neither introduced by the cache: `q` uses `2^512-1` (upstream:
+/// `2^512`), and `x` uses crypto-ratio `from_float` (~2^-52 truncation;
+/// upstream: exact f64 rational). These only matter in a measure-~2^-52
+/// sliver at the decision boundary; this module quantifies that sliver
+/// and its direction so it is documented, not hidden.
+#[cfg(test)]
+mod upstream_differential {
+    use super::*;
+    use num_bigint::{BigInt, Sign};
+    use num_rational::Ratio;
+    use num_traits::{One, Signed};
+    use std::ops::Neg;
+
+    // ---- Faithful re-port of upstream (BigInt, arbitrary precision) ----
+    // eligibility.rs L63-81. Char-for-char; diff against the pinned rev.
+    fn upstream_taylor(bound: usize, cmp: Ratio<BigInt>, x: Ratio<BigInt>) -> bool {
+        let mut new_x = x.clone();
+        let mut phi: Ratio<BigInt> = One::one();
+        let mut divisor: BigInt = One::one();
+        for _ in 0..bound {
+            phi += new_x.clone();
+            divisor += 1;
+            new_x = (new_x.clone() * x.clone()) / divisor.clone();
+            let error_term = new_x.clone().abs() * BigInt::from(3);
+            if cmp > phi.clone() + error_term.clone() {
+                return false;
+            } else if cmp < phi.clone() - error_term.clone() {
+                return true;
+            }
+        }
+        false
+    }
+
+    // eligibility.rs L32-49, with `ev` taken as BigInt for boundary probing.
+    fn upstream_won(phi_f: f64, ev: &BigInt, stake: u64, total_stake: u64) -> bool {
+        if (phi_f - 1.0).abs() < f64::EPSILON {
+            return true;
+        }
+        let ev_max = BigInt::from(2u8).pow(512);
+        let q = Ratio::new_raw(ev_max.clone(), &ev_max - ev);
+        let c = Ratio::from_float((1.0 - phi_f).ln()).expect("ln finite");
+        let w = Ratio::new_raw(BigInt::from(stake), BigInt::from(total_stake));
+        let x = (w * c).neg();
+        upstream_taylor(1000, q, x)
+    }
+
+    fn ev_to_le64(ev: &BigInt) -> [u8; 64] {
+        let (_, le) = ev.to_bytes_le();
+        let mut out = [0u8; 64];
+        let n = le.len().min(64);
+        out[..n].copy_from_slice(&le[..n]);
+        out
+    }
+
+    // dwarf NEW path (per-signer cache) and OLD path (pre-cache series),
+    // sharing the exact production `x`/`q` construction.
+    fn dwarf_x(phi_f: f64, stake: u64, total_stake: u64) -> (Ratio512, Ratio512) {
+        let three = Ratio512::from_u64(3, 1);
+        let c = Ratio512::from_float((1.0 - phi_f).ln()).expect("ln finite");
+        let x = Ratio512::from_u64(stake, total_stake).mul(&c).neg();
+        (x, three)
+    }
+    fn dwarf_cache(phi_f: f64, ev: &[u8; 64], stake: u64, total_stake: u64) -> bool {
+        if (phi_f - 1.0).abs() < f64::EPSILON {
+            return true;
+        }
+        let (x, three) = dwarf_x(phi_f, stake, total_stake);
+        let mut cache = TaylorBounds::new(x, &three);
+        cache.lottery_won(lottery_q(U512::from_le_slice(ev)))
+    }
+    fn dwarf_old(phi_f: f64, ev: &[u8; 64], stake: u64, total_stake: u64) -> bool {
+        if (phi_f - 1.0).abs() < f64::EPSILON {
+            return true;
+        }
+        let (x, three) = dwarf_x(phi_f, stake, total_stake);
+        taylor_comparison_ref(TAYLOR_BOUND, &lottery_q(U512::from_le_slice(ev)), &x, &three)
+    }
+
+    // Realistic Mithril domain: phi_f in [0.01, 0.5], no signer holds a
+    // majority (w = stake/total <= 0.5), total in [1e8, 1e9]. Matches
+    // upstream's own proptest ranges; dwarf's bounded U512 arithmetic
+    // does not overflow here.
+    fn gen_params(seed: u64) -> (f64, u64, u64, [u8; 64]) {
+        let d0: [u8; 64] = Blake2b512::digest(seed.to_le_bytes()).into();
+        let d1: [u8; 64] = Blake2b512::digest((seed ^ 0x9E37_79B9_7F4A_7C15).to_le_bytes()).into();
+        let mut ev = [0u8; 64];
+        ev[..32].copy_from_slice(&d0[..32]);
+        ev[32..].copy_from_slice(&d1[..32]);
+        let phi_f = 0.01 + (d0[40] as f64 / 255.0) * 0.49;
+        let total = 100_000_000u64
+            + u64::from_le_bytes(d1[0..8].try_into().unwrap()) % 900_000_000;
+        let stake = 1 + u64::from_le_bytes(d1[8..16].try_into().unwrap()) % (total / 2);
+        (phi_f, stake, total, ev)
+    }
+
+    // Extreme/out-of-domain: phi_f up to 0.95 and w up to ~1.0, where
+    // dwarf's U512 Taylor can overflow. Used only to prove the cache
+    // preserves OLD behaviour (incl. overflow) bit-for-bit.
+    fn gen_params_extreme(seed: u64) -> (f64, u64, u64, [u8; 64]) {
+        let d0: [u8; 64] = Blake2b512::digest(seed.to_le_bytes()).into();
+        let d1: [u8; 64] = Blake2b512::digest((seed ^ 0x1234_5678_9ABC_DEF0).to_le_bytes()).into();
+        let mut ev = [0u8; 64];
+        ev[..32].copy_from_slice(&d0[..32]);
+        ev[32..].copy_from_slice(&d1[..32]);
+        let phi_f = 0.01 + (d0[40] as f64 / 255.0) * 0.94;
+        let total = 1u64 + u64::from_le_bytes(d1[0..8].try_into().unwrap()) % 1_000_000_000;
+        let stake = 1 + u64::from_le_bytes(d1[8..16].try_into().unwrap()) % total;
+        (phi_f, stake, total, ev)
+    }
+
+    /// Massive cache==old regression fuzz on the realistic domain. The
+    /// airtight proof the optimisation changed no decision where dwarf
+    /// actually operates.
+    #[test]
+    #[ignore = "heavy differential fuzz vs upstream re-port; run: cargo test --release -- --ignored"]
+    fn cache_equals_old_series_massive() {
+        const N: u64 = 2_000_000;
+        for i in 0..N {
+            let (phi_f, stake, total, ev) = gen_params(i);
+            let cache = dwarf_cache(phi_f, &ev, stake, total);
+            let old = dwarf_old(phi_f, &ev, stake, total);
+            assert_eq!(
+                cache, old,
+                "REGRESSION: cache != old at seed {i}: phi_f={phi_f} stake={stake} total={total}"
+            );
+        }
+        eprintln!("cache_equals_old_series_massive: {N} realistic inputs, all identical");
+    }
+
+    /// Cache==old EVEN in the overflow regime: where the old series
+    /// panics (U512 overflow), the cache must panic identically; where it
+    /// returns, the cache must return the same. Proves the optimisation
+    /// is a perfect no-op even out of domain. Suppresses the panic hook
+    /// so the expected overflow panics don't spam stderr.
+    #[test]
+    #[ignore = "heavy differential fuzz vs upstream re-port; run: cargo test --release -- --ignored"]
+    fn cache_equals_old_under_overflow() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        const N: u64 = 200_000;
+        let mut overflows = 0u64;
+        for i in 0..N {
+            let (phi_f, stake, total, ev) = gen_params_extreme(i);
+            let cache = catch_unwind(AssertUnwindSafe(|| dwarf_cache(phi_f, &ev, stake, total)));
+            let old = catch_unwind(AssertUnwindSafe(|| dwarf_old(phi_f, &ev, stake, total)));
+            match (cache, old) {
+                (Ok(a), Ok(b)) => assert_eq!(a, b, "REGRESSION at seed {i} (no overflow)"),
+                (Err(_), Err(_)) => overflows += 1,
+                (a, b) => {
+                    std::panic::set_hook(prev);
+                    panic!("OVERFLOW PARITY BROKEN at seed {i}: cache_ok={} old_ok={} \
+                            phi_f={phi_f} stake={stake} total={total}",
+                           a.is_ok(), b.is_ok());
+                }
+            }
+        }
+        std::panic::set_hook(prev);
+        eprintln!(
+            "cache_equals_old_under_overflow: N={N}, identical incl. {overflows} \
+             shared-overflow inputs (pre-existing, out of realistic domain)"
+        );
+    }
+
+    /// Random fuzz vs upstream BigInt. Random 512-bit `ev` is essentially
+    /// never in the ~2^-52 boundary sliver, so dwarf and upstream must
+    /// agree everywhere here — a non-zero count would mean a gross `x`/`q`
+    /// construction bug, not a boundary effect. Also asserts cache==old.
+    #[test]
+    #[ignore = "heavy differential fuzz vs upstream re-port; run: cargo test --release -- --ignored"]
+    fn dwarf_matches_upstream_random() {
+        const N: u64 = 40_000;
+        let mut mism = 0u64;
+        for i in 0..N {
+            let (phi_f, stake, total, ev) = gen_params(i.wrapping_mul(2_654_435_761));
+            let cache = dwarf_cache(phi_f, &ev, stake, total);
+            let old = dwarf_old(phi_f, &ev, stake, total);
+            assert_eq!(cache, old, "REGRESSION at seed {i}");
+            let up = upstream_won(phi_f, &BigInt::from_bytes_le(Sign::Plus, &ev), stake, total);
+            if cache != up {
+                mism += 1;
+            }
+        }
+        eprintln!("dwarf_matches_upstream_random: N={N}, dwarf-vs-upstream mismatches={mism}");
+        assert_eq!(mism, 0, "dwarf diverged from upstream away from the boundary");
+    }
+
+    /// Quantify the pre-existing boundary sliver: for a param grid,
+    /// binary-search each impl's winning/losing `ev` threshold and report
+    /// the gap (|Δ| in bits) and its DIRECTION — whether dwarf wins on a
+    /// wider or narrower `ev` range than upstream. cache==old asserted at
+    /// each threshold. This documents the dwarf/upstream relationship; it
+    /// does NOT hard-assert a direction, because the gap is pre-existing.
+    #[test]
+    #[ignore = "heavy differential fuzz vs upstream re-port; run: cargo test --release -- --ignored"]
+    fn quantify_boundary_gap_vs_upstream() {
+        let phis = [0.05_f64, 0.2, 0.5];
+        let params: &[(u64, u64)] = &[(1_000_000, 100_000_000), (50_000_000, 1_000_000_000)];
+        let two512 = BigInt::from(2u8).pow(512);
+        let max_ev = &two512 - 1;
+
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        // Upstream's first-lost `ev` via binary search (BigInt, never
+        // overflows). `is_lottery_won` is monotone decreasing in `ev`.
+        let upstream_threshold = |phi_f: f64, stake: u64, total: u64| -> Option<BigInt> {
+            let zero = BigInt::from(0u8);
+            if !upstream_won(phi_f, &zero, stake, total) {
+                return Some(zero);
+            }
+            if upstream_won(phi_f, &max_ev, stake, total) {
+                return None;
+            }
+            let (mut lo, mut hi) = (zero, max_ev.clone());
+            while &hi - &lo > BigInt::one() {
+                let mid = (&lo + &hi) / 2u8;
+                if upstream_won(phi_f, &mid, stake, total) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            Some(hi)
+        };
+
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+
+        // Tallies across the whole boundary sweep.
+        let mut agree = 0u64;
+        let mut safe_disagree = 0u64; // dwarf LOST, upstream WON — conservative
+        let mut unsafe_disagree = 0u64; // dwarf WON, upstream LOST — DANGER
+        let mut dwarf_overflow = 0u64; // dwarf can't resolve near boundary
+        let mut regressions = 0u64; // cache != old
+
+        const W: i64 = 800;
+        for &phi_f in &phis {
+            for &(stake, total) in params {
+                let Some(up_t) = upstream_threshold(phi_f, stake, total) else {
+                    continue;
+                };
+                for d in -W..=W {
+                    let ev = &up_t + BigInt::from(d);
+                    if ev.sign() == Sign::Minus || ev > max_ev {
+                        continue;
+                    }
+                    let e = ev_to_le64(&ev);
+                    let up = upstream_won(phi_f, &ev, stake, total);
+                    let cache = catch_unwind(AssertUnwindSafe(|| dwarf_cache(phi_f, &e, stake, total)));
+                    let old = catch_unwind(AssertUnwindSafe(|| dwarf_old(phi_f, &e, stake, total)));
+                    match (cache, old) {
+                        (Ok(c), Ok(o)) => {
+                            if c != o {
+                                regressions += 1;
+                            }
+                            if c == up {
+                                agree += 1;
+                            } else if !c && up {
+                                safe_disagree += 1;
+                            } else {
+                                unsafe_disagree += 1; // c && !up
+                            }
+                        }
+                        (Err(_), Err(_)) => dwarf_overflow += 1, // both panic ⇒ still cache==old
+                        _ => regressions += 1, // overflow parity broken
+                    }
+                }
+            }
+        }
+        std::panic::set_hook(prev);
+
+        eprintln!(
+            "boundary sweep (±{W} around upstream ev*, {} param sets):\n  \
+             agree={agree}  safe_disagree(dwarf-lost/up-won)={safe_disagree}  \
+             UNSAFE(dwarf-won/up-lost)={unsafe_disagree}  \
+             dwarf_overflow={dwarf_overflow}  regressions={regressions}",
+            phis.len() * params.len()
+        );
+        // The two non-negotiables:
+        //  * the cache never diverges from the old series (regression), and
+        //  * dwarf NEVER accepts a ticket upstream rejects (soundness).
+        assert_eq!(regressions, 0, "cache diverged from old series at the boundary");
+        assert_eq!(
+            unsafe_disagree, 0,
+            "SOUNDNESS: dwarf accepted a lottery ticket upstream rejected"
+        );
+    }
 }
