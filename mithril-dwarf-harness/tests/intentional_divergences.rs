@@ -1,6 +1,6 @@
 //! Registry of intentional divergences between `mithril-dwarf` and
 //! upstream Mithril (`mithril-common` / `mithril-stm` / `mithril-client`
-//! at rev `36fd7f8818f0ff14b10336fa7f855d52698e40a8`).
+//! at rev `7e787deefd079c3f2b3160785e58a6b4affc1340`).
 //!
 //! Each entry is documented in a per-divergence doc comment and asserted
 //! by a pin test; the corpus-wide verdict-equivalence test confirms the
@@ -18,11 +18,65 @@
 //! | 4 | Check ordering in `verify_standard_certificate`         | orchestr. | Yes (top-level)     |
 //! | 5 | usize-vs-u64 BLS scalar index width on RISC0            | platform  | Yes (BLS math)      |
 //! | 6 | NextAvk chain compare: bytewise vs structural           | check     | On real chains      |
+//! | 7 | Lottery `x` via crypto-ratio `from_float` (~2^-52)      | lottery   | Safe-direction only |
+//! | 8 | Lottery `q` uses `2^512-1` for `ev_max` (not `2^512`)   | lottery   | Safe-direction only |
+//! | 9 | U512 Taylor overflow → panic on extreme lottery inputs  | lottery   | Liveness-only       |
+//!
+//! Divergences #7–#9 are pinned by the differential-fuzz suite in
+//! `mithril_dwarf::certificate_verification::complex_checks::
+//! upstream_differential` (dwarf-side, where the private lottery
+//! internals and crypto-ratio / num-rational references are reachable),
+//! not by a pin in this file. Run them with
+//! `cargo test -p mithril-dwarf --release -- --ignored`. They diff
+//! dwarf's lottery against a faithful re-port of upstream's exact BigInt
+//! algorithm and assert the soundness-critical invariant: dwarf NEVER
+//! accepts a lottery ticket upstream rejects.
 //!
 //! Closed divergences (kept here for audit trail):
 //! - #2 — Ed25519 non-strict verify. Aligned with upstream by switching
 //!   to `verify_strict` at the genesis-cert call site; measured cost
 //!   ~74k host cycles per chain (one call per chain, genesis-only).
+//!
+//! Divergence #7 — Lottery `x` via crypto-ratio `from_float`
+//!
+//! Upstream computes `c = ln(1 - phi_f)` as an EXACT rational of the f64
+//! (`num_rational::Ratio::from_float`). dwarf uses crypto-ratio
+//! `RatioU512::from_float`, which is `round(f * 2^52) / 2^52` — a ~2^-52
+//! truncation. So dwarf's per-signer `x = -w * c` differs from upstream's
+//! by ~2^-52 relative. This shifts dwarf's winning `ev` threshold from
+//! upstream's by up to ~2^460 in absolute `ev` terms, i.e. a
+//! measure-~2^-52 sliver of the 2^512 `ev` space.
+//!
+//! For a real (hash-derived) `ev` the probability of landing in that
+//! sliver is ~2^-52, so the corpus is verdict-equivalent. The boundary
+//! sweep in `upstream_differential::quantify_boundary_gap_vs_upstream`
+//! confirms that within the sliver dwarf is only ever MORE conservative
+//! (rejects what upstream accepts) or overflows — never the reverse.
+//!
+//! Divergence #8 — Lottery `q` uses `ev_max = 2^512 - 1`
+//!
+//! Upstream computes `q = 2^512 / (2^512 - ev)`. dwarf cannot hold
+//! `2^512` in a `U512`, so `lottery_q` uses `U512::MAX = 2^512 - 1`,
+//! giving `q' = (2^512-1) / ((2^512-1) - ev)`. The two differ by ~2^-512
+//! relative — dwarf's `q'` is slightly larger, making dwarf marginally
+//! LESS likely to win (the safe direction). Dominated by #7; same
+//! measure-zero boundary effect, same safe direction.
+//!
+//! Divergence #9 — U512 Taylor overflow → panic (liveness, not soundness)
+//!
+//! dwarf evaluates `exp(x)` with a bounded-width U512 Taylor series,
+//! reducing (`normalize`) only when a limb exceeds a bit threshold.
+//! Upstream uses arbitrary-precision `BigInt` and never overflows. For
+//! extreme inputs — high `phi_f` together with a single signer near
+//! `w = stake/total ≈ 1`, or an `ev` driven to the exact decision
+//! boundary (forcing deep iteration before a reduction) — dwarf's `mul`
+//! overflows and panics. In the zkVM a panic aborts proof generation for
+//! that cert: a liveness / DoS consideration, NOT a soundness hole (no
+//! invalid cert is ever accepted). The inputs are outside the realistic
+//! Mithril parameter domain (`phi_f ≈ 0.2`, stake distributed across many
+//! signers) and are never hit by real certs; the
+//! `cache_equals_old_under_overflow` pin shows the optimisation preserves
+//! this behaviour exactly (same panics on the same inputs).
 
 use mithril_dwarf::certificate_verification::VerifyError;
 use mithril_dwarf_harness::{

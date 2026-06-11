@@ -1,3 +1,4 @@
 /target
 /Cargo.lock
 /mithril-dwarf-harness/tests/test_data/certificates/
+/.claude
