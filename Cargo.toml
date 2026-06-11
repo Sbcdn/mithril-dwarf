@@ -22,8 +22,7 @@ blake2 = "0.10.6"
 fixed = "1.28"
 
 crypto-bigint = { version = "0.5.5", features = ["alloc"] }
-#crypto-ratio = { path="../crypto-ratio" }
-crypto-ratio = "0.1.0"
+crypto-ratio = "0.2.0"
 
 hex = "*"
 chrono = "0.4.41"

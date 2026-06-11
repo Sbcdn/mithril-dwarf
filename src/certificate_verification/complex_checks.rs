@@ -317,13 +317,15 @@ fn is_lottery_won_with_x(ev: U512, x: &Ratio512, three: &Ratio512) -> bool {
 fn taylor_comparison(bound: usize, cmp: Ratio512, x: &Ratio512, three: &Ratio512) -> bool {
     let mut new_x = x.clone();
     let mut phi = Ratio512::one();
-    let mut divisor = U512::ONE;
+    // Factorial counter (bounded by `bound`); u64 lets `div_by_u64` scale the
+    // denominator with a single-limb multiply.
+    let mut divisor: u64 = 1;
 
     for _ in 0..bound {
         phi = phi.add(&new_x);
 
-        divisor = divisor.wrapping_add(&U512::ONE);
-        new_x = new_x.mul(x).div_by_uint(&divisor);
+        divisor += 1;
+        new_x = new_x.mul(x).div_by_u64(divisor);
 
         if new_x.numer.bits() > 450 || new_x.denom.bits() > 450 {
             new_x.normalize();
@@ -333,8 +335,9 @@ fn taylor_comparison(bound: usize, cmp: Ratio512, x: &Ratio512, three: &Ratio512
         }
 
         let error_term = new_x.abs().mul(three);
-        let mut phi_plus = phi.add(&error_term);
-        let mut phi_minus = phi.add(&error_term.neg());
+        // (phi + err, phi - err) sharing the cross-multiplications: 3 wide-muls
+        // instead of 6 per Taylor iteration. Bit-identical to the two adds.
+        let (mut phi_plus, mut phi_minus) = phi.add_sub(&error_term);
 
         if phi_plus.numer.bits() > 400 || phi_plus.denom.bits() > 400 {
             phi_plus.normalize();
