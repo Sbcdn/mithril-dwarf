@@ -152,6 +152,8 @@ pub fn verify_bls_multisig(cert: &CertificateZeroCopy) -> Result<(), VerifyError
     };
     let three = Ratio512::from_u64(3, 1);
 
+    #[cfg(feature = "guest-bench")]
+    let t = risc0_zkvm::guest::env::cycle_count();
     preliminary_verify(
         &multi_sig,
         &msgp,
@@ -161,9 +163,27 @@ pub fn verify_bls_multisig(cert: &CertificateZeroCopy) -> Result<(), VerifyError
         &three,
         cert.aggregate_verification_key.total_stake,
     )?;
+    #[cfg(feature = "guest-bench")]
+    let t = {
+        let now = risc0_zkvm::guest::env::cycle_count();
+        eprintln!("[DWARF-BENCH] preliminary_verify={}", now - t);
+        now
+    };
 
     verify_merkle_batch_proof(&multi_sig, &cert.aggregate_verification_key)?;
+    #[cfg(feature = "guest-bench")]
+    let t = {
+        let now = risc0_zkvm::guest::env::cycle_count();
+        eprintln!("[DWARF-BENCH] merkle_batch_proof={}", now - t);
+        now
+    };
+
     verify_bls_aggregate(&msgp, &multi_sig)?;
+    #[cfg(feature = "guest-bench")]
+    {
+        let now = risc0_zkvm::guest::env::cycle_count();
+        eprintln!("[DWARF-BENCH] bls_aggregate={}", now - t);
+    }
 
     Ok(())
 }
@@ -218,6 +238,9 @@ fn preliminary_verify(
         .chain_update(b"map")
         .chain_update(msgp);
 
+    #[cfg(feature = "guest-bench")]
+    let (mut dense_cyc, mut lott_cyc): (u64, u64) = (0, 0);
+
     for sig in &multi_sig.signatures {
         // The Taylor-bound sequence depends only on the per-signer
         // `x = -w*ln(1-phi_f)` and the per-cert `three`, so it is identical
@@ -235,11 +258,23 @@ fn preliminary_verify(
                 return Err(VerifyError::IndexOutOfBounds);
             }
 
+            #[cfg(feature = "guest-bench")]
+            let d0 = risc0_zkvm::guest::env::cycle_count();
             let ev = evaluate_dense_mapping_with_base(&base_hasher, index, sig.sigma_bytes);
+            #[cfg(feature = "guest-bench")]
+            let l0 = {
+                let now = risc0_zkvm::guest::env::cycle_count();
+                dense_cyc += now - d0;
+                now
+            };
             let won = match &mut bounds {
                 None => true,
                 Some(b) => b.lottery_won(lottery_q(ev)),
             };
+            #[cfg(feature = "guest-bench")]
+            {
+                lott_cyc += risc0_zkvm::guest::env::cycle_count() - l0;
+            }
             if !won {
                 return Err(VerifyError::LotteryLost);
             }
@@ -250,6 +285,12 @@ fn preliminary_verify(
             indices.push(index as u32);
         }
     }
+
+    #[cfg(feature = "guest-bench")]
+    eprintln!(
+        "[DWARF-BENCH]   dense_mapping={dense_cyc} lottery_compare={lott_cyc} indices={}",
+        indices.len()
+    );
 
     if (indices.len() as u64) < k {
         return Err(VerifyError::NoQuorum);
@@ -302,6 +343,19 @@ fn lottery_q(ev: U512) -> Ratio512 {
 /// bound. An index that doesn't resolve within this many terms loses.
 const TAYLOR_BOUND: usize = 1000;
 
+/// One cached Taylor term: the error-bound interval plus the `q`-independent
+/// half of each comparison cross-multiply, precomputed once per signer.
+struct Bound {
+    phi_plus: Ratio512,
+    phi_minus: Ratio512,
+    // `U512::MAX * phi.denom` as `(lo, hi)` — the `q.numer * bound.denom`
+    // side of the compare (`q.numer` is always `U512::MAX`). Shared across
+    // all of a signer's indices; the per-index compare then needs only the
+    // `bound.numer * q.denom` mul_wide, halving the per-level wide-muls.
+    ad_plus: (U512, U512),
+    ad_minus: (U512, U512),
+}
+
 /// Per-signer Taylor expansion of `exp(x)` with a `3 * term` error bound.
 ///
 /// The `(phi_plus, phi_minus)` bound sequence is a pure function of `x`
@@ -309,8 +363,10 @@ const TAYLOR_BOUND: usize = 1000;
 /// only at the final compare. [`lottery_won`](Self::lottery_won) lazily
 /// extends and caches the sequence so a signer's N indices build it once
 /// instead of N times; the per-index residual is the two `q.gt`/`q.lt`
-/// cross-multiplies. Emitted bounds are bit-identical to recomputing the
-/// series per index — only the wide-mul/normalize work is shared.
+/// cross-multiplies, each with the `q.numer`-side product precached
+/// ([`Bound`]). Emitted bounds and verdicts are bit-identical to
+/// recomputing the series per index — only the wide-mul/normalize work is
+/// shared.
 struct TaylorBounds<'a> {
     x: Ratio512,
     three: &'a Ratio512,
@@ -320,7 +376,7 @@ struct TaylorBounds<'a> {
     // Factorial counter; u64 lets `div_by_u64` scale the denominator with
     // a single-limb multiply.
     divisor: u64,
-    bounds: Vec<(Ratio512, Ratio512)>,
+    bounds: Vec<Bound>,
 }
 
 impl<'a> TaylorBounds<'a> {
@@ -368,7 +424,10 @@ impl<'a> TaylorBounds<'a> {
             phi_minus.normalize();
         }
 
-        self.bounds.push((phi_plus, phi_minus));
+        // Precompute the `q.numer`-side product (`q.numer == U512::MAX`).
+        let ad_plus = U512::MAX.mul_wide(&phi_plus.denom);
+        let ad_minus = U512::MAX.mul_wide(&phi_minus.denom);
+        self.bounds.push(Bound { phi_plus, phi_minus, ad_plus, ad_minus });
         true
     }
 
@@ -378,20 +437,57 @@ impl<'a> TaylorBounds<'a> {
     /// full series against `q` from scratch.
     #[inline]
     fn lottery_won(&mut self, q: Ratio512) -> bool {
+        debug_assert!(q.numer == U512::MAX && !q.negative, "q must be lottery_q output");
         let mut level = 0;
         loop {
             if level >= self.bounds.len() && !self.extend() {
                 return false;
             }
-            let (phi_plus, phi_minus) = &self.bounds[level];
-            if q.gt(phi_plus) {
+            let b = &self.bounds[level];
+            if q_gt_bound(&q, &b.phi_plus, &b.ad_plus) {
                 return false;
             }
-            if q.lt(phi_minus) {
+            if q_lt_bound(&q, &b.phi_minus, &b.ad_minus) {
                 return true;
             }
             level += 1;
         }
+    }
+}
+
+/// `q > bound`, with `q.numer * bound.denom` supplied precomputed as
+/// `ad = (lo, hi)`. `q` is the positive lottery ratio (`numer = U512::MAX`).
+///
+/// Bit-identical to `q.gt(bound)`: for a non-negative `bound` the factored
+/// cross-multiply (`q.numer*bound.denom` vs `bound.numer*q.denom`) equals
+/// the full one, and crypto-ratio's `mag_diff` / small-value fast paths
+/// only ever short-circuit to that same boolean. The rare negative `bound`
+/// defers to `Ratio512::gt` for its sign handling.
+#[inline]
+fn q_gt_bound(q: &Ratio512, bound: &Ratio512, ad: &(U512, U512)) -> bool {
+    if bound.negative {
+        return q.gt(bound);
+    }
+    let (bc_lo, bc_hi) = bound.numer.mul_wide(&q.denom);
+    match ad.1.cmp(&bc_hi) {
+        core::cmp::Ordering::Greater => true,
+        core::cmp::Ordering::Less => false,
+        core::cmp::Ordering::Equal => ad.0.cmp(&bc_lo) == core::cmp::Ordering::Greater,
+    }
+}
+
+/// `q < bound`; mirror of [`q_gt_bound`]. Defers to `Ratio512::lt` for a
+/// negative `bound`.
+#[inline]
+fn q_lt_bound(q: &Ratio512, bound: &Ratio512, ad: &(U512, U512)) -> bool {
+    if bound.negative {
+        return q.lt(bound);
+    }
+    let (bc_lo, bc_hi) = bound.numer.mul_wide(&q.denom);
+    match ad.1.cmp(&bc_hi) {
+        core::cmp::Ordering::Less => true,
+        core::cmp::Ordering::Greater => false,
+        core::cmp::Ordering::Equal => ad.0.cmp(&bc_lo) == core::cmp::Ordering::Less,
     }
 }
 
@@ -765,6 +861,137 @@ mod taylor_cache_tests {
              indices_per_signer={:.1}",
             indices as f64 / signers as f64
         );
+    }
+
+    /// The factored `q_gt_bound` / `q_lt_bound` must equal crypto-ratio's
+    /// real `Ratio512::gt` / `lt` for every `(q, bound)` — this is the
+    /// bit-exactness proof for the precomputed-`ad` optimisation,
+    /// independent of the Taylor series. Sweeps bounds across magnitudes
+    /// (near 1, ≫1, ≪1, tiny, huge), signs, and real Taylor terms, against
+    /// `q` from the full `ev` range.
+    #[test]
+    fn factored_compare_matches_cryptoratio() {
+        // q values: ev=0 (q≈1), ev≈MAX (q huge), and a hash sweep.
+        let mut qs: Vec<Ratio512> = vec![
+            lottery_q(U512::ZERO),
+            lottery_q(U512::ONE),
+            lottery_q(U512::MAX),
+            lottery_q(U512::MAX.wrapping_sub(&U512::ONE)),
+        ];
+        for s in 0u64..64 {
+            let d: [u8; 64] = Blake2b512::digest((s ^ 0x5151).to_le_bytes()).into();
+            qs.push(lottery_q(U512::from_le_slice(&d)));
+        }
+
+        // Synthetic bounds across magnitudes and signs.
+        let mut bounds: Vec<Ratio512> = Vec::new();
+        let pairs: &[(u64, u64)] = &[
+            (1, 1), (2, 1), (1, 2), (1000001, 1000000), (999999, 1000000),
+            (1, 1_000_000_000), (1_000_000_000, 1), (3, 7), (7, 3), (1, u64::MAX),
+            (u64::MAX, 1), (u64::MAX, u64::MAX),
+        ];
+        for &(a, b) in pairs {
+            let r = Ratio512::from_u64(a, b);
+            bounds.push(r.clone());
+            bounds.push(r.neg()); // exercise the negative-bound fallback
+        }
+        // Real Taylor terms (the actual phi_plus/phi_minus shapes). Tiny
+        // per-signer `w` and a shallow depth keep the series inside U512
+        // (deep levels on a larger x hit the pre-existing overflow #9,
+        // which is irrelevant to the compare being tested here).
+        let three = Ratio512::from_u64(3, 1);
+        for &phi_f in &[0.05_f64, 0.2, 0.5] {
+            let c = Ratio512::from_float((1.0 - phi_f).ln()).unwrap();
+            let x = Ratio512::from_u64(1, 1000).mul(&c).neg();
+            let mut tb = TaylorBounds::new(x, &three);
+            while tb.bounds.len() < 6 && tb.extend() {}
+            for b in &tb.bounds {
+                bounds.push(b.phi_plus.clone());
+                bounds.push(b.phi_minus.clone());
+            }
+        }
+
+        let (mut gt_t, mut gt_f, mut lt_t, mut lt_f) = (0u64, 0u64, 0u64, 0u64);
+        for bound in &bounds {
+            let ad = U512::MAX.mul_wide(&bound.denom);
+            for q in &qs {
+                let g = q_gt_bound(q, bound, &ad);
+                let l = q_lt_bound(q, bound, &ad);
+                assert_eq!(g, q.gt(bound), "gt mismatch q.denom={:?} bound={:?}", q.denom, bound);
+                assert_eq!(l, q.lt(bound), "lt mismatch q.denom={:?} bound={:?}", q.denom, bound);
+                if g { gt_t += 1 } else { gt_f += 1 }
+                if l { lt_t += 1 } else { lt_f += 1 }
+            }
+        }
+        // Non-vacuity: both outcomes must appear for both operators.
+        assert!(gt_t > 0 && gt_f > 0 && lt_t > 0 && lt_f > 0,
+            "vacuous: gt({gt_t},{gt_f}) lt({lt_t},{lt_f})");
+        eprintln!("factored_compare: {} (q,bound) pairs; gt(T={gt_t},F={gt_f}) lt(T={lt_t},F={lt_f})",
+            bounds.len() * qs.len());
+    }
+
+    /// Adversarial primitive fuzz targeting the exact region a comparison
+    /// bug hides in: bounds constructed within a few ULPs of `q`, so the
+    /// 1024-bit cross-products `M*d` and `n*D` tie in their high limb and
+    /// the decision falls to the low limb. (The end-to-end differential
+    /// tests never reach this region — random `ev` puts `q` nowhere near a
+    /// bound, and the boundary sweep targets `q ≈ exp(x)`, below
+    /// `phi_plus`.) For every constructed pair, `q_gt_bound`/`q_lt_bound`
+    /// must equal crypto-ratio's `gt`/`lt`. Asserts the tied-high-limb
+    /// path is actually exercised, so the test can never pass vacuously.
+    #[test]
+    #[ignore = "heavy adversarial primitive fuzz; run with --release -- --ignored"]
+    fn factored_compare_adversarial_near_equal() {
+        use crypto_bigint::Encoding;
+        use num_bigint::{BigInt, Sign};
+
+        let to_big = |u: &U512| BigInt::from_bytes_le(Sign::Plus, &u.to_le_bytes());
+        let from_big = |b: &BigInt| -> Option<U512> {
+            if b.sign() == Sign::Minus {
+                return None;
+            }
+            let (_, mut le) = b.to_bytes_le();
+            if le.len() > 64 {
+                return None;
+            }
+            le.resize(64, 0);
+            Some(U512::from_le_slice(&le))
+        };
+
+        let m_big = to_big(&U512::MAX);
+        let (mut checked, mut tied) = (0u64, 0u64);
+        for s in 0u64..6000 {
+            let ev: [u8; 64] = Blake2b512::digest(s.to_le_bytes()).into();
+            let q = lottery_q(U512::from_le_slice(&ev));
+            if q.denom == U512::ZERO {
+                continue;
+            }
+            let d_q_big = to_big(&q.denom);
+
+            let dd: [u8; 64] = Blake2b512::digest((s ^ 0xBEEF_BEEF).to_le_bytes()).into();
+            let d = U512::from_le_slice(&dd);
+            if d == U512::ZERO {
+                continue;
+            }
+            // n0 = floor(M*d / D): makes bound n0/d ≈ q = M/D.
+            let n0 = (&m_big * to_big(&d)) / &d_q_big;
+            for delta in -4i64..=4 {
+                let Some(n_u) = from_big(&(&n0 + BigInt::from(delta))) else {
+                    continue;
+                };
+                let bound = Ratio512::new_raw(n_u, d, false);
+                let ad = U512::MAX.mul_wide(&bound.denom);
+                let (_, bc_hi) = bound.numer.mul_wide(&q.denom);
+                if ad.1 == bc_hi {
+                    tied += 1;
+                }
+                assert_eq!(q_gt_bound(&q, &bound, &ad), q.gt(&bound), "gt s={s} d={delta}");
+                assert_eq!(q_lt_bound(&q, &bound, &ad), q.lt(&bound), "lt s={s} d={delta}");
+                checked += 1;
+            }
+        }
+        assert!(tied > 500, "tied-high-limb path under-exercised: {tied}/{checked}");
+        eprintln!("adversarial near-equal: checked={checked} tied_high_limb={tied}");
     }
 }
 

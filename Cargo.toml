@@ -16,6 +16,10 @@ host = ["dep:anyhow","dep:mithril-client","dep:mithril-common","dep:mithril-stm"
 # the host adapter compile cleanly without a `check-cfg` warning. dwarf
 # does not currently enable the SNARK proof system on its mithril deps.
 future_snark = []
+# Guest-only profiling: emits per-section `env::cycle_count()` deltas from
+# `verify_bls_multisig` (lottery-compare / dense-mapping / Merkle / BLS) to
+# stderr. Compiles to nothing when off; never enable for host or production.
+guest-bench = []
 
 [dependencies]
 blake2 = "0.10.6"
