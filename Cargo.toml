@@ -26,10 +26,19 @@ future_snark = []
 # `verify_bls_multisig` (lottery-compare / dense-mapping / Merkle / BLS) to
 # stderr. Compiles to nothing when off; never enable for host or production.
 guest-bench = []
+# Cardano-transaction Merkle-inclusion proofs (oaks_tx consumer). Guest-side,
+# serde-free; Blake2s256 MMR over ckb-merkle-mountain-range (no_std). Off by
+# default so nothing leaks into oaks_cert.
+tx-inclusion = ["dep:ckb-merkle-mountain-range"]
+# Cardano transaction parsing for oaks_tx. Phase A = txid hasher (blake2b only,
+# no extra deps); Phase B (pallas CBOR-locate + script/datum hashes) lands later.
+tx-parsing = []
 
 [dependencies]
 blake2 = "0.10.6"
 fixed = "1.28"
+# Merkle Mountain Range proof verify for `tx-inclusion`; no_std (no serde).
+ckb-merkle-mountain-range = { version = "0.6.1", default-features = false, optional = true }
 
 crypto-bigint = { version = "0.5.5", features = ["alloc"] }
 crypto-ratio = "0.2.0"

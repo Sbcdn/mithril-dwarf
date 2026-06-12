@@ -45,6 +45,9 @@
 pub mod certificate_verification;
 pub mod parser;
 
+#[cfg(feature = "tx-inclusion")]
+pub mod tx_inclusion;
+
 #[cfg(feature = "host")]
 pub use mithril_client::{
     AggregatorDiscoveryType, CardanoTransactionsProofs, Client, ClientBuilder,
