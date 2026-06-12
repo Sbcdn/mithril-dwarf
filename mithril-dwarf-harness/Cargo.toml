@@ -15,7 +15,7 @@ name = "audit"
 path = "src/bin/audit.rs"
 
 [dependencies]
-mithril-dwarf = { path = "..", features = ["host", "tx-inclusion"] }
+mithril-dwarf = { path = "..", features = ["host", "tx-inclusion", "tx-parsing"] }
 
 # Upstream Mithril, pinned to a specific rev so the comparison reference
 # can never silently drift between cargo invocations.

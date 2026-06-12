@@ -48,6 +48,9 @@ pub mod parser;
 #[cfg(feature = "tx-inclusion")]
 pub mod tx_inclusion;
 
+#[cfg(feature = "tx-parsing")]
+pub mod tx_parsing;
+
 #[cfg(feature = "host")]
 pub use mithril_client::{
     AggregatorDiscoveryType, CardanoTransactionsProofs, Client, ClientBuilder,
