@@ -17,9 +17,9 @@ use mithril_common::entities::{
 use serde::Deserialize;
 
 use mithril_dwarf::tx_inclusion::{
-    build_tx_leaf_v1, build_tx_leaf_v2, decode_proof, encode_proof, BlockRange as DwarfBlockRange,
-    MKMapProof as DwarfMapProof, MKProof as DwarfProof, MKTreeNode as DwarfNode, TxLeafInput,
-    MAX_TX_LEAF_LEN,
+    build_tx_leaf_v1, build_tx_leaf_v2, decode_proof, encode_proof, verify_tx_inclusion_v1,
+    verify_tx_inclusion_v2, BlockRange as DwarfBlockRange, MKMapProof as DwarfMapProof,
+    MKProof as DwarfProof, MKTreeNode as DwarfNode, TxError, TxLeafInput, MAX_TX_LEAF_LEN,
 };
 
 // --- Transcoder: upstream bincode-2 MKMapProof -> dwarf types (host side) ---
@@ -332,6 +332,112 @@ fn wire_round_trips_real_proofs() {
             root,
             "root changed through wire",
         );
+    }
+}
+
+/// Full guest path for **v2**: wire bytes -> `verify_tx_inclusion_v2` -> decode,
+/// verify, root-bind, contains. Accepts the real tx under the certified root and
+/// rejects a wrong root / wrong tx / truncated wire — all as `Err`, never panic.
+#[test]
+fn entrypoint_full_guest_path_v2() {
+    let v2 =
+        transcode(include_bytes!("test_data/tx_proofs/preview_v2_proof.bin")).expect("v2 transcode");
+    let wire = encode_proof(&v2);
+    let root = h32(include_str!("test_data/tx_proofs/preview_v2_root.hex").trim());
+    let mut it = include_str!("test_data/tx_proofs/preview_v2_tx.txt")
+        .trim()
+        .split_whitespace();
+    let input = TxLeafInput {
+        tx_id: h32(it.next().unwrap()),
+        block_hash: h32(it.next().unwrap()),
+        block_number: it.next().unwrap().parse().unwrap(),
+        slot_number: it.next().unwrap().parse().unwrap(),
+    };
+
+    assert_eq!(verify_tx_inclusion_v2(&wire, &[input], &root), Ok(()));
+
+    let mut bad_root = root;
+    bad_root[0] ^= 1;
+    assert_eq!(
+        verify_tx_inclusion_v2(&wire, &[input], &bad_root),
+        Err(TxError::RootMismatch),
+    );
+
+    let mut bad_tx = input;
+    bad_tx.slot_number ^= 1;
+    assert_eq!(
+        verify_tx_inclusion_v2(&wire, &[bad_tx], &root),
+        Err(TxError::LeafNotFound),
+    );
+
+    assert!(matches!(
+        verify_tx_inclusion_v2(&wire[..wire.len() / 2], &[input], &root),
+        Err(TxError::InvalidProof),
+    ));
+    assert_eq!(verify_tx_inclusion_v2(&wire, &[], &root), Err(TxError::LeafNotFound));
+}
+
+/// Full guest path for **v1**: a real mainnet leaf (bare txid) under the certified
+/// root accepts; wrong root / wrong txid reject.
+#[test]
+fn entrypoint_full_guest_path_v1() {
+    let v1 = transcode_json(include_bytes!("test_data/tx_proofs/mainnet_proof.json"))
+        .expect("v1 transcode");
+    let wire = encode_proof(&v1);
+    let root = h32(include_str!("test_data/tx_proofs/mainnet_root.hex").trim());
+
+    // Pull a real bare-txid leaf out of the proof.
+    let mut txid = None;
+    for (_r, sub) in &v1.sub_proofs {
+        for (_p, l) in &sub.master_proof.inner_leaves {
+            txid = Some(h32(std::str::from_utf8(l.as_bytes()).unwrap()));
+        }
+    }
+    let txid = txid.expect("a v1 leaf");
+
+    assert_eq!(verify_tx_inclusion_v1(&wire, &[txid], &root), Ok(()));
+
+    let mut bad_root = root;
+    bad_root[0] ^= 1;
+    assert_eq!(
+        verify_tx_inclusion_v1(&wire, &[txid], &bad_root),
+        Err(TxError::RootMismatch),
+    );
+
+    let mut bad_tx = txid;
+    bad_tx[0] ^= 1;
+    assert_eq!(
+        verify_tx_inclusion_v1(&wire, &[bad_tx], &root),
+        Err(TxError::LeafNotFound),
+    );
+}
+
+/// Panic-safety fuzz: every single-byte mutation and every truncation of a real
+/// wire proof must return (Ok/Err) from the entrypoint, never panic.
+#[test]
+fn entrypoint_never_panics_on_mutated_wire() {
+    let v2 =
+        transcode(include_bytes!("test_data/tx_proofs/preview_v2_proof.bin")).expect("v2 transcode");
+    let wire = encode_proof(&v2);
+    let root = [0u8; 32];
+    let input = TxLeafInput {
+        tx_id: [0u8; 32],
+        block_hash: [0u8; 32],
+        block_number: 0,
+        slot_number: 0,
+    };
+
+    for i in 0..wire.len() {
+        for b in [0x01u8, 0x80, 0xFF] {
+            let mut m = wire.clone();
+            m[i] ^= b;
+            let r = std::panic::catch_unwind(|| verify_tx_inclusion_v2(&m, &[input], &root));
+            assert!(r.is_ok(), "panicked on byte-{i} mutation {b:#x}");
+        }
+    }
+    for cut in 0..=wire.len() {
+        let r = std::panic::catch_unwind(|| verify_tx_inclusion_v2(&wire[..cut], &[input], &root));
+        assert!(r.is_ok(), "panicked on truncation at {cut}");
     }
 }
 
