@@ -418,7 +418,7 @@ fn read_entity_type_data_fast(
 ) -> Result<[u64; 2], ParseError> {
     match discriminant {
         0 | 1 => Ok([parser.read_u64()?, 0]),
-        2 | 3 | 4 => {
+        2..=4 => {
             let a = parser.read_u64()?;
             let b = parser.read_u64()?;
             Ok([a, b])

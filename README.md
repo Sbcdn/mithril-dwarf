@@ -7,7 +7,7 @@ A cycle-optimized, allocation-free Cardano Mithril certificate verifier in Rust.
 - Re-implementation of Mithril chain verification against the binary layer, no `serde` or canonical-JSON on the hot path.
 - Custom zero-copy wire format: `CertificateZeroCopy<'a>` holds slice references into the source `&[u8]`.
 - Tiered cheapest-first: invalid chains fail in `O(1)` comparisons before any cryptography runs.
-- Bit-equivalent to upstream Mithril at pinned rev `36fd7f88` — verified per check and at the top level for every corpus cert and every mutation.
+- Bit-equivalent to upstream Mithril at pinned rev `7e787de` — verified per check and at the top level for every corpus cert and every mutation, plus a differential lottery fuzz against an arbitrary-precision re-port of upstream's eligibility check.
 
 ## Background
 
@@ -53,7 +53,7 @@ The host-only `byte_serializer.rs` and `minimal_converter.rs` bridge from upstre
 | 3. Chain    | Same-epoch: AVK and protocol params must match exactly. Cross-epoch: must match the `next_*` parts carried by the previous cert. |
 | 4. BLS      | Aggregate BLS via `blst`; Merkle batch proof via Blake2b; lottery via Taylor-series `ln(1 − φ_f)` over rational arithmetic. |
 
-[`VerifyError`](src/certificate_verification/mod.rs#L14) is a 4-byte `Copy` enum (pinned by a unit test); failure paths allocate nothing. `ln(1 − φ_f)` is hoisted once per cert; the per-signer `x = −w · c` is hoisted per signer; lottery and Merkle work are the dominant cycle bucket and the focus of the optimization work.
+[`VerifyError`](src/certificate_verification/mod.rs#L14) is a 4-byte `Copy` enum (pinned by a unit test); failure paths allocate nothing. The per-cert `ln(1 − φ_f)` and the per-signer `x = −w · c` are hoisted out of the inner loop, and the Taylor error-bound sequence is built once per signer and replayed across that signer's indices. The lottery (rational `exp(x)` comparison) and the BLS aggregate are the dominant cycle buckets and the focus of the optimization work.
 
 ## Public API
 
@@ -141,21 +141,23 @@ cargo test -p mithril-dwarf-harness --test intentional_divergences
 cargo run  -p mithril-dwarf-harness --bin audit
 ```
 
-[benches/](benches/) carries iai-callgrind benchmarks for per-check cycle cost and side-by-side comparison against the reference path.
+The lottery is security-critical and the positive corpus cannot exercise its decision boundary, so the comparison primitive carries dedicated tests in [`src/certificate_verification/complex_checks.rs`](src/certificate_verification/complex_checks.rs) — heavy differential fuzz against an arbitrary-precision `num` re-port of upstream `mithril-stm`'s lottery, plus exact and near-equality pins against the underlying rational comparison. Run them with `cargo test --release -- --ignored`.
 
 ### Intentional divergences
 
-Four places where dwarf's observable behaviour differs from upstream (BLS identity rejected at pairing time rather than at deserialise, asymmetric epoch-chaining, usize-vs-u64 BLS scalar index width, bytewise NextAvk chain compare) are documented and pin-tested in [`tests/intentional_divergences.rs`](mithril-dwarf-harness/tests/intentional_divergences.rs). Each is verdict-equivalent on real chains; a corpus-wide gate catches any future change that breaks that equivalence.
+The places where dwarf's observable behaviour or precision differs from upstream — BLS identity rejected at pairing time rather than at deserialise, asymmetric epoch-chaining, check ordering, usize-vs-u64 BLS scalar index width, bytewise NextAvk chain compare, and three numeric lottery approximations (`from_float`, `ev_max`, U512 Taylor overflow) — are documented and pin-tested in [`tests/intentional_divergences.rs`](mithril-dwarf-harness/tests/intentional_divergences.rs). Each is verdict-equivalent (or strictly safer) on real chains; a corpus-wide gate catches any future change that breaks that equivalence.
 
 ### Upstream drift CI
 
-[`.github/workflows/upstream-drift-check.yml`](.github/workflows/upstream-drift-check.yml) rebuilds the harness weekly against `Sbcdn/mithril.git#main` instead of the pinned rev. Any divergence in behaviour or type signatures fails the job and signals that the pin needs revisiting. The same check is runnable locally via [`scripts/check-upstream-drift.sh`](scripts/check-upstream-drift.sh).
+[`.github/workflows/upstream-drift-check.yml`](.github/workflows/upstream-drift-check.yml) rebuilds the harness against `Sbcdn/mithril.git#main` instead of the pinned rev. A build or behaviour divergence fails the job and signals that the pin needs revisiting.
 
 ## Status
 
-Pre-1.0 (`v0.1.0`). The `host` feature pins a frozen `Sbcdn/mithril.git@mithril_risc0` commit; the guest-only default feature set does not depend on the fork.
+Pre-1.0 (`v0.2.0`). The `host` feature pins a frozen `Sbcdn/mithril.git` rev (`7e787de`); the guest-only default feature set does not depend on the fork.
 
-The RISC0 precompile patches for `ed25519-dalek`, `blst`, and `sha2` are intentionally commented out in [`Cargo.toml`](Cargo.toml#L80-L83) — they must be applied at the workspace level by the downstream guest consumer (e.g. `oaks_cert/guest`). See the comment block above the patches for the rationale.
+On representative mainnet certificates, the standard-certificate verifier costs roughly half the RISC0 cycles it did at `v0.1.0` (~46–49% fewer), driven mostly by amortizing the per-signer lottery Taylor expansion and factoring the constant operand out of the per-index comparison. The lottery (`TaylorBounds`) and BLS aggregate remain the dominant buckets.
+
+The RISC0 precompile patches for `ed25519-dalek`, `blst`, and `sha2` are intentionally commented out in [`Cargo.toml`](Cargo.toml) — they must be applied at the workspace level by the downstream guest consumer (e.g. `oaks_cert/guest`). See the comment block above the patches for the rationale.
 
 Contributions, audits, and bug reports are welcome. The equivalence harness is the contract.
 

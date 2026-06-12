@@ -592,7 +592,7 @@ pub fn feed_entity_type_hash<H: HashSink>(hasher: &mut H, discriminant: u8, data
         0 | 1 => {
             hasher.update(&data[0].to_be_bytes());
         }
-        2 | 3 | 4 => {
+        2..=4 => {
             hasher.update(&data[0].to_be_bytes());
             hasher.update(&data[1].to_be_bytes());
         }

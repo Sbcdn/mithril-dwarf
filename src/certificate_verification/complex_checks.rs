@@ -155,7 +155,7 @@ pub fn verify_bls_multisig(cert: &CertificateZeroCopy) -> Result<(), VerifyError
     #[cfg(feature = "guest-bench")]
     let t = risc0_zkvm::guest::env::cycle_count();
     preliminary_verify(
-        &multi_sig,
+        multi_sig,
         &msgp,
         cert.metadata.k,
         cert.metadata.m,
@@ -170,7 +170,7 @@ pub fn verify_bls_multisig(cert: &CertificateZeroCopy) -> Result<(), VerifyError
         now
     };
 
-    verify_merkle_batch_proof(&multi_sig, &cert.aggregate_verification_key)?;
+    verify_merkle_batch_proof(multi_sig, &cert.aggregate_verification_key)?;
     #[cfg(feature = "guest-bench")]
     let t = {
         let now = risc0_zkvm::guest::env::cycle_count();
@@ -178,7 +178,7 @@ pub fn verify_bls_multisig(cert: &CertificateZeroCopy) -> Result<(), VerifyError
         now
     };
 
-    verify_bls_aggregate(&msgp, &multi_sig)?;
+    verify_bls_aggregate(&msgp, multi_sig)?;
     #[cfg(feature = "guest-bench")]
     {
         let now = risc0_zkvm::guest::env::cycle_count();
@@ -511,7 +511,7 @@ fn verify_merkle_batch_proof(
     let mut leaves: Vec<[u8; 32]> = Vec::with_capacity(multi_sig.signatures.len());
     for sig in &multi_sig.signatures {
         let leaf_bytes = serialize_registered_party(sig.vk_bytes, sig.stake);
-        leaves.push(Blake2b::<U32>::digest(&leaf_bytes).into());
+        leaves.push(Blake2b::<U32>::digest(leaf_bytes).into());
     }
 
     verify_batch_path(
@@ -579,23 +579,23 @@ fn verify_batch_path(
                 // Even node - sibling is from values
                 let sibling = values_iter.next().ok_or(VerifyError::BatchProofInvalid)?;
                 node_h.update(sibling);
-                node_h.update(&current_leaves[i]);
+                node_h.update(current_leaves[i]);
                 scratch_hashes.push(node_h.finalize_reset().into());
             } else {
                 // Odd node
                 let sib = sibling(ordered_indices[i]);
                 if i < ordered_indices.len() - 1 && ordered_indices[i + 1] == sib {
-                    node_h.update(&current_leaves[i]);
-                    node_h.update(&current_leaves[i + 1]);
+                    node_h.update(current_leaves[i]);
+                    node_h.update(current_leaves[i + 1]);
                     scratch_hashes.push(node_h.finalize_reset().into());
                     i += 1;
                 } else if sib < nr_nodes {
                     let sibling_val = values_iter.next().ok_or(VerifyError::BatchProofInvalid)?;
-                    node_h.update(&current_leaves[i]);
+                    node_h.update(current_leaves[i]);
                     node_h.update(sibling_val);
                     scratch_hashes.push(node_h.finalize_reset().into());
                 } else {
-                    node_h.update(&current_leaves[i]);
+                    node_h.update(current_leaves[i]);
                     node_h.update(PHANTOM_SIBLING_BLAKE2B_256);
                     scratch_hashes.push(node_h.finalize_reset().into());
                 }
@@ -666,7 +666,7 @@ fn aggregate_signatures_and_keys(
     let mut scalars = Vec::with_capacity(multi_sig.signatures.len() * 16);
     for (index, _) in multi_sig.signatures.iter().enumerate() {
         let mut hasher = hashed_sigs.clone();
-        hasher.update((index as usize).to_be_bytes());
+        hasher.update(index.to_be_bytes());
         scalars.extend_from_slice(hasher.finalize().as_ref());
     }
 
@@ -808,7 +808,7 @@ mod taylor_cache_tests {
     fn real_cert_per_index_decisions_match_reference() {
         use crate::parser::byte_deserializer::{certificate_from_bytes, SignatureBasicZeroCopy};
 
-        let bytes = include_bytes!("../../benches/data/cert_current.bin");
+        let bytes = include_bytes!("../../testdata/cert_current.bin");
         let cert = certificate_from_bytes(bytes).expect("parse real SD cert");
         let multi_sig = match &cert.signature {
             SignatureBasicZeroCopy::Multi { signature, .. } => signature,
