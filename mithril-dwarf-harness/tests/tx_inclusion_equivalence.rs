@@ -258,6 +258,55 @@ fn dwarf_matches_real_mainnet_proof() {
     assert_eq!(found, 3, "expected 3 tx leaves, got {found}");
 }
 
+/// Real PREVIEW v2 (`CardanoBlocksTransactions`) vector: the live v2 endpoint
+/// returns a bincode proof + the composite-leaf block fields. Proves
+/// `build_tx_leaf_v2` reproduces the real composite leaf and that dwarf
+/// verifies + reconstructs the certified `cardano_blocks_transactions_merkle_root`.
+#[test]
+fn dwarf_matches_real_preview_v2_proof() {
+    let proof_bytes = include_bytes!("test_data/tx_proofs/preview_v2_proof.bin");
+    let certified_root = include_str!("test_data/tx_proofs/preview_v2_root.hex").trim();
+    let tx_line = include_str!("test_data/tx_proofs/preview_v2_tx.txt").trim();
+    let mut it = tx_line.split_whitespace();
+    let txid = it.next().unwrap();
+    let block_hash = it.next().unwrap();
+    let block_number: u64 = it.next().unwrap().parse().unwrap();
+    let slot_number: u64 = it.next().unwrap().parse().unwrap();
+
+    // v2 wire is bincode (not json like v1).
+    let mine = transcode(proof_bytes).expect("transcode v2 bincode proof");
+
+    assert_eq!(mine.verify(), Ok(()), "dwarf rejected a real v2 proof");
+    assert_eq!(
+        hex::encode(mine.compute_root().as_bytes()),
+        certified_root,
+        "dwarf root != certified blocks-transactions root",
+    );
+
+    let input = TxLeafInput {
+        tx_id: h32(txid),
+        block_hash: h32(block_hash),
+        block_number,
+        slot_number,
+    };
+    let mut buf = [0u8; MAX_TX_LEAF_LEN];
+    let leaf = build_tx_leaf_v2(&input, &mut buf);
+    assert!(leaf.starts_with(b"Tx/"), "v2 leaf not composite");
+
+    // build_tx_leaf_v2 reproduces an actual leaf node in the live proof, and
+    // dwarf's contains finds it.
+    let mut matched = false;
+    for (_r, sub) in &mine.sub_proofs {
+        for (_p, l) in &sub.master_proof.inner_leaves {
+            if l.as_bytes() == leaf {
+                matched = true;
+            }
+        }
+    }
+    assert!(matched, "build_tx_leaf_v2 != any real v2 leaf");
+    assert!(mine.contains(&DwarfNode::new(leaf.to_vec())), "v2 proof missing composite leaf");
+}
+
 #[test]
 fn dwarf_rejects_tampered_proof() {
     let txs = sample_txs();
