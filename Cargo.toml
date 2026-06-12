@@ -4,14 +4,20 @@ resolver = "2"
 
 [package]
 name = "mithril-dwarf"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version = "1.85"
 license = "Apache-2.0"
 authors = ["Torben Poguntke <sbcdn@pm.me>"]
+description = "Cycle-optimized, allocation-free Cardano Mithril certificate verifier for zkVM guests, bit-equivalent to upstream Mithril."
+repository = "https://github.com/Sbcdn/mithril-dwarf"
+readme = "README.md"
+keywords = ["mithril", "cardano", "zkvm", "risc0", "verification"]
+categories = ["cryptography::cryptocurrencies", "cryptography"]
 
 [features]
 default = []
-host = ["dep:anyhow","dep:mithril-client","dep:mithril-common","dep:mithril-stm"]
+host = ["dep:anyhow", "dep:chrono", "dep:mithril-client", "dep:mithril-common", "dep:mithril-stm"]
 # Reserved no-op feature so `#[cfg(feature = "future_snark")]` branches in
 # the host adapter compile cleanly without a `check-cfg` warning. dwarf
 # does not currently enable the SNARK proof system on its mithril deps.
@@ -28,8 +34,7 @@ fixed = "1.28"
 crypto-bigint = { version = "0.5.5", features = ["alloc"] }
 crypto-ratio = "0.2.0"
 
-hex = "*"
-chrono = "0.4.41"
+hex = "0.4"
 blst = "=0.3.15"
 sha2 = "=0.10.9"
 # For host compilation must be 2.2 but precompiles in rsc0 only support 2.1.1 atm
@@ -37,11 +42,12 @@ sha2 = "=0.10.9"
 ed25519-dalek = { version = "=2.1.1", features = ["digest"] }
 risc0-zkvm = { version = "^3.0.3", default-features = false, features = ['std'] }
 
-# Optional: Only for Writer and Converter with "host" feature flag.
-# Upstream Mithril is pinned by rev (not branch) so the harness, the
+# Optional: only the host-only writer/converter modules and the equivalence
+# harness. Upstream Mithril is pinned by rev (not branch) so the harness, the
 # guest, and any downstream consumer all see the same code; flip the rev
 # explicitly when ready to bump.
 anyhow = { version = "1.0.94", optional = true }
+chrono = { version = "0.4.41", optional = true }
 mithril-client = { git = "https://github.com/Sbcdn/mithril.git", rev = "7e787deefd079c3f2b3160785e58a6b4affc1340", features = ["num-integer-backend", "rustls"], optional = true }
 mithril-common = { git = "https://github.com/Sbcdn/mithril.git", rev = "7e787deefd079c3f2b3160785e58a6b4affc1340", features = ["num-integer-backend"], optional = true }
 mithril-stm = { git = "https://github.com/Sbcdn/mithril.git", rev = "7e787deefd079c3f2b3160785e58a6b4affc1340", features = ["benchmark-internals", "num-integer-backend"], optional = true }
@@ -90,51 +96,11 @@ mithril-stm = { git = "https://github.com/Sbcdn/mithril.git", rev = "7e787deefd0
 #sha2 = { git = "https://github.com/risc0/RustCrypto-hashes", tag = "sha2-v0.10.9-risczero.0"}
 
 
+# Test-only: the differential lottery tests diff dwarf's bounded-precision
+# arithmetic against an arbitrary-precision `num` re-port of upstream.
 [dev-dependencies]
-bincode = "1.3"
-async-trait = "0.1.89"
-criterion = { version = "0.5", features = ["html_reports"] }
-pprof = { version = "0.13", features = ["flamegraph", "criterion"] }
-iai-callgrind = "0.16"
-proptest = "1.4"
-reqwest = { version = "0.11", features = ["blocking", "json"] }
-tokio = { version = "1", features = ["full","rt","macros"] }
-slog = "2.8.2"
-once_cell = "1.19"
 num-bigint = "0.4"
 num-rational = "0.4"
-num-integer = "0.1"
 num-traits = "0.2"
-
-[profile.bench]
-debug = true
-
-[[bench]]
-name = "cycle_count"
-harness = false
-required-features = ["host"]
-
-[[bench]]
-name = "certificate_parsing"
-harness = false
-required-features = ["host"]
-
-[[bench]]
-name = "verification_comparison"
-harness = false
-required-features = ["host"]
-
-[[bench]]
-name = "verification_cycles"
-harness = false
-required-features = ["host"]
-
-[[bench]]
-name = "equivalence_performance"
-harness = false
-required-features = ["host"]
-
-[[bench]]
-name = "ed25519_strict"
-harness = false
+proptest = "1.4"
 

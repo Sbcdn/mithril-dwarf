@@ -808,7 +808,7 @@ mod taylor_cache_tests {
     fn real_cert_per_index_decisions_match_reference() {
         use crate::parser::byte_deserializer::{certificate_from_bytes, SignatureBasicZeroCopy};
 
-        let bytes = include_bytes!("../../benches/data/cert_current.bin");
+        let bytes = include_bytes!("../../testdata/cert_current.bin");
         let cert = certificate_from_bytes(bytes).expect("parse real SD cert");
         let multi_sig = match &cert.signature {
             SignatureBasicZeroCopy::Multi { signature, .. } => signature,
