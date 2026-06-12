@@ -171,4 +171,70 @@ mod tests {
         assert_eq!(n.as_bytes(), b"45-60");
         assert_eq!(BlockRange { start: 0, end: 15 }.to_node().as_bytes(), b"0-15");
     }
+
+    // SECURITY: the guest must reject any malformed proof with `Err`, never
+    // panic. These feed adversarial structured input straight at the ckb-mmr
+    // verify path our code relies on; each is wrapped so a panic fails loudly.
+    fn no_panic<T>(f: impl FnOnce() -> T + std::panic::UnwindSafe) -> Result<T, ()> {
+        std::panic::catch_unwind(f).map_err(|_| ())
+    }
+
+    fn n(b: u8) -> MKTreeNode {
+        MKTreeNode::new(vec![b; 8])
+    }
+
+    #[test]
+    fn malformed_mkproof_errs_not_panics() {
+        // Empty proof, a claimed leaf, bogus size — must not panic.
+        let cases = vec![
+            MKProof {
+                inner_root: n(1),
+                inner_leaves: vec![(0, n(2))],
+                inner_proof_size: 0,
+                inner_proof_items: vec![],
+            },
+            MKProof {
+                inner_root: n(1),
+                inner_leaves: vec![(u64::MAX, n(2))],
+                inner_proof_size: u64::MAX,
+                inner_proof_items: vec![n(3), n(4)],
+            },
+            MKProof {
+                inner_root: n(1),
+                inner_leaves: vec![],
+                inner_proof_size: 7,
+                inner_proof_items: vec![n(3)],
+            },
+        ];
+        for (i, p) in cases.into_iter().enumerate() {
+            let r = no_panic(move || p.verify());
+            assert!(r.is_ok(), "MKProof::verify PANICKED on malformed case {i}");
+            assert_eq!(r.unwrap(), Err(TxError::ProofVerifyFailed), "case {i} should reject");
+        }
+    }
+
+    #[test]
+    fn malformed_mkmapproof_errs_not_panics() {
+        let bad_master = MKProof {
+            inner_root: n(1),
+            inner_leaves: vec![(0, n(2))],
+            inner_proof_size: 0,
+            inner_proof_items: vec![],
+        };
+        // Master alone (no sub) is just a bad MMR proof.
+        let p1 = MKMapProof { master_proof: bad_master.clone(), sub_proofs: vec![] };
+        // With a sub-proof whose binding can't match.
+        let p2 = MKMapProof {
+            master_proof: bad_master.clone(),
+            sub_proofs: vec![(
+                BlockRange { start: 0, end: 15 },
+                MKMapProof { master_proof: bad_master, sub_proofs: vec![] },
+            )],
+        };
+        for (i, p) in [p1, p2].into_iter().enumerate() {
+            let r = no_panic(move || p.verify());
+            assert!(r.is_ok(), "MKMapProof::verify PANICKED on case {i}");
+            assert!(r.unwrap().is_err(), "case {i} should reject");
+        }
+    }
 }
