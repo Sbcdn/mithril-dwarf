@@ -69,6 +69,11 @@ fn transcode(upstream_bincode: &[u8]) -> Result<DwarfMapProof, ()> {
     Ok(map_proof(&mirror))
 }
 
+fn transcode_json(json: &[u8]) -> Result<DwarfMapProof, ()> {
+    let mirror: MapProofMirror = serde_json::from_slice(json).map_err(|_| ())?;
+    Ok(map_proof(&mirror))
+}
+
 // --- Test fixtures built with upstream's real code ---
 
 fn h32(s: &str) -> [u8; 32] {
@@ -207,6 +212,45 @@ fn dwarf_matches_upstream_multi_range() {
     // An unproved tx (range [15,30)) must be absent.
     let other: UpNode = CardanoBlockTransactionMkTreeNode::from(txs[1].clone()).into();
     assert!(!mine.contains(&DwarfNode::new(other.to_vec())), "contains an unproved leaf");
+}
+
+/// Real mainnet vector (fetched via `fetch_tx_proof`): dwarf must verify a
+/// genuine network `MKMapProof` and reconstruct the *certified* merkle root —
+/// the strongest non-circular check (the root came from upstream's own
+/// `verify`, dwarf rebuilds it with its Blake2s/MMR). Also confirms the real
+/// tree's leaves are the composite `Tx/...` form.
+#[test]
+fn dwarf_matches_real_mainnet_proof() {
+    let json = include_bytes!("test_data/tx_proofs/mainnet_proof.json");
+    let certified_root = include_str!("test_data/tx_proofs/mainnet_root.hex").trim();
+
+    let mine = transcode_json(json).expect("transcode real mainnet proof");
+
+    assert_eq!(mine.verify(), Ok(()), "dwarf rejected a real mainnet proof");
+    assert_eq!(
+        hex::encode(mine.compute_root().as_bytes()),
+        certified_root,
+        "dwarf-reconstructed root != certified mainnet root",
+    );
+
+    // Current mainnet `CardanoTransactions` tree: the leaf is the bare txid hex
+    // string (NOT the composite `Tx/...`, which is the newer v2 format). Confirm
+    // dwarf's `contains` finds each real leaf, and the leaves are our 3 txids.
+    let expected = [
+        "1d013efbd0f784f801cc3542605f4dcedbc45c01e10c625124eea505158d546b",
+        "9dad0d7f6bf1e793f2572ff96337d7dc30ef554c1c0687e66cfe3855a458f503",
+        "fdb2d9b874ef322540a402fb83c2541f67b32451c4983af2d27e4217bc4b8559",
+    ];
+    let mut found = 0;
+    for (_range, sub) in &mine.sub_proofs {
+        for (_pos, leaf) in &sub.master_proof.inner_leaves {
+            let s = std::str::from_utf8(leaf.as_bytes()).unwrap_or("");
+            assert!(expected.contains(&s), "unexpected mainnet leaf: {s:?}");
+            assert!(mine.contains(leaf), "dwarf doesn't contain a real mainnet leaf");
+            found += 1;
+        }
+    }
+    assert_eq!(found, 3, "expected 3 tx leaves, got {found}");
 }
 
 #[test]

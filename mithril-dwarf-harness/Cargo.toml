@@ -19,7 +19,7 @@ mithril-dwarf = { path = "..", features = ["host", "tx-inclusion"] }
 
 # Upstream Mithril, pinned to a specific rev so the comparison reference
 # can never silently drift between cargo invocations.
-mithril-client = { git = "https://github.com/Sbcdn/mithril.git", rev = "7e787deefd079c3f2b3160785e58a6b4affc1340", features = ["num-integer-backend", "rustls"] }
+mithril-client = { git = "https://github.com/Sbcdn/mithril.git", rev = "7e787deefd079c3f2b3160785e58a6b4affc1340", features = ["num-integer-backend", "rustls", "unstable"] }
 mithril-common = { git = "https://github.com/Sbcdn/mithril.git", rev = "7e787deefd079c3f2b3160785e58a6b4affc1340", features = ["num-integer-backend"] }
 mithril-stm    = { git = "https://github.com/Sbcdn/mithril.git", rev = "7e787deefd079c3f2b3160785e58a6b4affc1340", features = ["num-integer-backend"] }
 
