@@ -17,7 +17,7 @@ use mithril_common::entities::{
 use serde::Deserialize;
 
 use mithril_dwarf::tx_inclusion::{
-    build_tx_leaf, BlockRange as DwarfBlockRange, MKMapProof as DwarfMapProof,
+    build_tx_leaf_v1, build_tx_leaf_v2, BlockRange as DwarfBlockRange, MKMapProof as DwarfMapProof,
     MKProof as DwarfProof, MKTreeNode as DwarfNode, TxLeafInput, MAX_TX_LEAF_LEN,
 };
 
@@ -140,7 +140,7 @@ fn dwarf_verify_root_leaf_contains_match_upstream() {
             slot_number: *txs[i].slot_number,
         };
         let mut buf = [0u8; MAX_TX_LEAF_LEN];
-        let my_leaf = build_tx_leaf(&input, &mut buf);
+        let my_leaf = build_tx_leaf_v2(&input, &mut buf);
         assert_eq!(my_leaf, up_leaf.to_vec().as_slice(), "leaf bytes differ from upstream");
         assert!(mine.contains(&DwarfNode::new(my_leaf.to_vec())), "proof missing proved leaf {i}");
     }
@@ -205,7 +205,7 @@ fn dwarf_matches_upstream_multi_range() {
             slot_number: *txs[i].slot_number,
         };
         let mut buf = [0u8; MAX_TX_LEAF_LEN];
-        let my_leaf = build_tx_leaf(&input, &mut buf);
+        let my_leaf = build_tx_leaf_v2(&input, &mut buf);
         assert_eq!(my_leaf, up_leaf.to_vec().as_slice(), "multi-range leaf mismatch tx {i}");
         assert!(mine.contains(&DwarfNode::new(my_leaf.to_vec())), "missing proved leaf {i}");
     }
@@ -246,7 +246,12 @@ fn dwarf_matches_real_mainnet_proof() {
         for (_pos, leaf) in &sub.master_proof.inner_leaves {
             let s = std::str::from_utf8(leaf.as_bytes()).unwrap_or("");
             assert!(expected.contains(&s), "unexpected mainnet leaf: {s:?}");
-            assert!(mine.contains(leaf), "dwarf doesn't contain a real mainnet leaf");
+            // dwarf's v1 leaf builder reproduces the real mainnet leaf byte-for-byte,
+            // and the proof contains it.
+            let mut buf = [0u8; 64];
+            let built = build_tx_leaf_v1(&h32(s), &mut buf);
+            assert_eq!(built, leaf.as_bytes(), "v1 leaf builder != real mainnet leaf");
+            assert!(mine.contains(&DwarfNode::new(built.to_vec())), "proof missing built v1 leaf");
             found += 1;
         }
     }

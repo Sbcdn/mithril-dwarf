@@ -49,10 +49,20 @@ impl core::fmt::Write for SliceWriter<'_> {
     }
 }
 
-/// Write the leaf identifier into `out` and return the written prefix.
-/// `out` must be at least [`MAX_TX_LEAF_LEN`] bytes.
+/// v1 (`CardanoTransactions`) leaf: the bare `transaction_hash` as a 64-char
+/// lowercase-hex string (the current public-mainnet format). Distinct from the
+/// composite v2 leaf ([`build_tx_leaf_v2`]).
 #[inline]
-pub fn build_tx_leaf<'a>(input: &TxLeafInput, out: &'a mut [u8; MAX_TX_LEAF_LEN]) -> &'a [u8] {
+pub fn build_tx_leaf_v1<'a>(tx_id: &[u8; 32], out: &'a mut [u8; 64]) -> &'a [u8] {
+    hex_digest_to_buf(tx_id, out);
+    out
+}
+
+/// v2 (`CardanoBlocksTransactions`) leaf, byte-for-byte equal to upstream
+/// `leaf_identifier`. Write it into `out` (>= [`MAX_TX_LEAF_LEN`]) and return
+/// the written prefix.
+#[inline]
+pub fn build_tx_leaf_v2<'a>(input: &TxLeafInput, out: &'a mut [u8; MAX_TX_LEAF_LEN]) -> &'a [u8] {
     let mut pos = 0usize;
     let push = |out: &mut [u8; MAX_TX_LEAF_LEN], pos: &mut usize, bytes: &[u8]| {
         out[*pos..*pos + bytes.len()].copy_from_slice(bytes);
@@ -94,7 +104,7 @@ mod tests {
             slot_number: 9_876_543_210,
         };
         let mut buf = [0u8; MAX_TX_LEAF_LEN];
-        let got = build_tx_leaf(&input, &mut buf);
+        let got = build_tx_leaf_v2(&input, &mut buf);
 
         let want = format!(
             "Tx/{}/{}/{}/{}",
@@ -117,7 +127,7 @@ mod tests {
             slot_number: 0,
         };
         let mut buf = [0u8; MAX_TX_LEAF_LEN];
-        let got = build_tx_leaf(&input, &mut buf);
+        let got = build_tx_leaf_v2(&input, &mut buf);
         let want = format!(
             "Tx/{}/{}/0/0",
             hex::encode(input.tx_id),
