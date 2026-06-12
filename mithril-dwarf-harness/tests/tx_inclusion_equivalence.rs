@@ -17,8 +17,9 @@ use mithril_common::entities::{
 use serde::Deserialize;
 
 use mithril_dwarf::tx_inclusion::{
-    build_tx_leaf_v1, build_tx_leaf_v2, BlockRange as DwarfBlockRange, MKMapProof as DwarfMapProof,
-    MKProof as DwarfProof, MKTreeNode as DwarfNode, TxLeafInput, MAX_TX_LEAF_LEN,
+    build_tx_leaf_v1, build_tx_leaf_v2, decode_proof, encode_proof, BlockRange as DwarfBlockRange,
+    MKMapProof as DwarfMapProof, MKProof as DwarfProof, MKTreeNode as DwarfNode, TxLeafInput,
+    MAX_TX_LEAF_LEN,
 };
 
 // --- Transcoder: upstream bincode-2 MKMapProof -> dwarf types (host side) ---
@@ -305,6 +306,33 @@ fn dwarf_matches_real_preview_v2_proof() {
     }
     assert!(matched, "build_tx_leaf_v2 != any real v2 leaf");
     assert!(mine.contains(&DwarfNode::new(leaf.to_vec())), "v2 proof missing composite leaf");
+}
+
+/// The custom serde-free guest wire carries the real proofs losslessly:
+/// host-encode -> guest-decode reproduces a proof that still verifies and binds
+/// the same certified root. Covers both live formats (v1 json, v2 bincode).
+#[test]
+fn wire_round_trips_real_proofs() {
+    let v1 =
+        transcode_json(include_bytes!("test_data/tx_proofs/mainnet_proof.json")).expect("v1 transcode");
+    let v1_root = include_str!("test_data/tx_proofs/mainnet_root.hex").trim();
+    let v2 =
+        transcode(include_bytes!("test_data/tx_proofs/preview_v2_proof.bin")).expect("v2 transcode");
+    let v2_root = include_str!("test_data/tx_proofs/preview_v2_root.hex").trim();
+
+    for (proof, root) in [(v1, v1_root), (v2, v2_root)] {
+        let bytes = encode_proof(&proof);
+        let decoded = decode_proof(&bytes).expect("wire decode");
+        // Re-encoding the decoded proof is byte-identical: lossless structure.
+        assert_eq!(encode_proof(&decoded), bytes, "wire not lossless");
+        // The decoded proof still verifies and binds the same certified root.
+        assert_eq!(decoded.verify(), Ok(()), "decoded proof failed verify");
+        assert_eq!(
+            hex::encode(decoded.compute_root().as_bytes()),
+            root,
+            "root changed through wire",
+        );
+    }
 }
 
 #[test]

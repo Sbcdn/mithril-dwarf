@@ -9,7 +9,9 @@
 mod leaf;
 mod node;
 mod proof;
+mod wire;
 
 pub use leaf::{build_tx_leaf_v1, build_tx_leaf_v2, TxLeafInput, MAX_TX_LEAF_LEN};
 pub use node::{merge_nodes, MKTreeNode, MergeMKTreeNode};
 pub use proof::{BlockRange, MKMapProof, MKProof, TxError};
+pub use wire::{decode_proof, encode_proof};
