@@ -17,12 +17,15 @@ use pallas_primitives::conway::{PlutusData, RedeemerTag, Redeemers, Tx};
 
 use super::hashes::{ScriptLanguage, datum_hash, script_hash};
 use super::script_data::verify_decoded;
+use super::txid::cardano_tx_id;
 
 /// `tx_parsing` failure — wrong/garbage input, never a panic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TxParseError {
     /// The transaction CBOR did not decode as a Conway transaction.
     Decode,
+    /// `blake2b256(body)` did not equal the expected (proven) txid.
+    TxidMismatch,
     /// The cost-model wire was malformed.
     CostModelWire,
     /// Recomputed `script_data_hash` did not match the transaction body's.
@@ -44,17 +47,25 @@ pub struct TxComponent {
     pub component_bytes: Vec<u8>,
 }
 
-/// Locate the in-scope components of a Cardano transaction. Scripts (`0x05`) and
-/// output datums (`0x02`/`0x03`) are always emitted — the txid/hash commits them.
+/// Locate the in-scope components of a Cardano transaction.
+///
+/// The transaction is first bound to the proven `expected_txid`
+/// (`blake2b256(body) == expected_txid`) — folded in so nothing is extracted
+/// from a transaction that isn't the certified one. Scripts (`0x05`) and output
+/// datums (`0x02`/`0x03`) are then always emitted (txid/hash-authenticated).
 /// Witness-set components bound only via `script_data_hash` (`0x01` redeemers,
-/// `0x04` witness datums) are emitted only when `cost_models` is given: the
-/// binding is verified first (folded in), so they can't be emitted unless
-/// authentic. Returns `Err` on a malformed tx or a failed binding, never panics.
+/// `0x04` witness datums) are emitted only when `cost_models` is given, after
+/// that binding verifies. Returns `Err` on a malformed tx, a txid mismatch, or a
+/// failed binding, never panics.
 pub fn locate_tx_components(
     tx_bytes: &[u8],
+    expected_txid: &[u8; 32],
     cost_models: Option<&[u8]>,
 ) -> Result<Vec<TxComponent>, TxParseError> {
     let tx: Tx = minicbor::decode(tx_bytes).map_err(|_| TxParseError::Decode)?;
+    if cardano_tx_id(tx.transaction_body.raw_cbor()) != *expected_txid {
+        return Err(TxParseError::TxidMismatch);
+    }
     let mut out = Vec::new();
     extract_scripts(&tx, &mut out);
     extract_output_datums(&tx, &mut out);

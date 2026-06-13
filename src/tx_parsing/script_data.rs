@@ -23,33 +23,36 @@ use super::locate::TxParseError;
 const MAX_LANGS: usize = 8;
 const MAX_COSTS: usize = 4096;
 
+fn take<'a>(wire: &'a [u8], pos: &mut usize, n: usize) -> Result<&'a [u8], TxParseError> {
+    let end = pos.checked_add(n).ok_or(TxParseError::CostModelWire)?;
+    let s = wire.get(*pos..end).ok_or(TxParseError::CostModelWire)?;
+    *pos = end;
+    Ok(s)
+}
+
 fn decode_cost_models(wire: &[u8]) -> Result<LanguageViews, TxParseError> {
     let mut pos = 0usize;
-    let mut take = |n: usize| -> Result<&[u8], TxParseError> {
-        let end = pos.checked_add(n).ok_or(TxParseError::CostModelWire)?;
-        let s = wire.get(pos..end).ok_or(TxParseError::CostModelWire)?;
-        pos = end;
-        Ok(s)
-    };
-    let lang_count = take(1)?[0] as usize;
+    let lang_count = take(wire, &mut pos, 1)?[0] as usize;
     if lang_count > MAX_LANGS {
         return Err(TxParseError::CostModelWire);
     }
     let mut models: Vec<(u8, Vec<i64>)> = Vec::with_capacity(lang_count);
     for _ in 0..lang_count {
-        let lang = take(1)?[0];
+        let lang = take(wire, &mut pos, 1)?[0];
         let cost_count = u32::from_le_bytes(
-            take(4)?
+            take(wire, &mut pos, 4)?
                 .try_into()
                 .map_err(|_| TxParseError::CostModelWire)?,
         ) as usize;
         if cost_count > MAX_COSTS {
             return Err(TxParseError::CostModelWire);
         }
-        let mut costs = Vec::with_capacity(cost_count);
+        // Reserve no more than the remaining bytes can hold (8 per cost), so a
+        // forged count can't amplify a few bytes into a large allocation.
+        let mut costs = Vec::with_capacity(cost_count.min((wire.len() - pos) / 8));
         for _ in 0..cost_count {
             costs.push(i64::from_le_bytes(
-                take(8)?
+                take(wire, &mut pos, 8)?
                     .try_into()
                     .map_err(|_| TxParseError::CostModelWire)?,
             ));
