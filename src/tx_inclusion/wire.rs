@@ -35,6 +35,11 @@ impl<'a> Reader<'a> {
     }
 
     #[inline]
+    fn remaining(&self) -> usize {
+        self.data.len() - self.pos
+    }
+
+    #[inline]
     fn take(&mut self, n: usize) -> Result<&'a [u8], TxError> {
         let end = self.pos.checked_add(n).ok_or(TxError::InvalidProof)?;
         let slice = self.data.get(self.pos..end).ok_or(TxError::InvalidProof)?;
@@ -70,11 +75,14 @@ fn read_proof(r: &mut Reader) -> Result<MKProof, TxError> {
     let inner_proof_size = r.u64()?;
     let inner_root = r.node()?;
 
+    // Reserve no more than the remaining bytes could actually hold (a leaf entry
+    // is >= 8 position + 4 length bytes), so a forged count can't amplify a few
+    // bytes into a huge allocation. `take()` still bounds the per-node bytes.
     let leaf_count = r.u32()?;
     if leaf_count > MAX_COUNT {
         return Err(TxError::InvalidProof);
     }
-    let mut inner_leaves = Vec::with_capacity(leaf_count as usize);
+    let mut inner_leaves = Vec::with_capacity((leaf_count as usize).min(r.remaining() / 12));
     for _ in 0..leaf_count {
         let position = r.u64()?;
         inner_leaves.push((position, r.node()?));
@@ -84,7 +92,8 @@ fn read_proof(r: &mut Reader) -> Result<MKProof, TxError> {
     if item_count > MAX_COUNT {
         return Err(TxError::InvalidProof);
     }
-    let mut inner_proof_items = Vec::with_capacity(item_count as usize);
+    // A proof item is >= 4 length bytes.
+    let mut inner_proof_items = Vec::with_capacity((item_count as usize).min(r.remaining() / 4));
     for _ in 0..item_count {
         inner_proof_items.push(r.node()?);
     }
@@ -106,7 +115,8 @@ fn read_map(r: &mut Reader, depth: u32) -> Result<MKMapProof, TxError> {
     if sub_count > MAX_COUNT {
         return Err(TxError::InvalidProof);
     }
-    let mut sub_proofs = Vec::with_capacity(sub_count as usize);
+    // A sub-proof is >= 8 start + 8 end bytes (plus a nested proof).
+    let mut sub_proofs = Vec::with_capacity((sub_count as usize).min(r.remaining() / 16));
     for _ in 0..sub_count {
         let start = r.u64()?;
         let end = r.u64()?;
@@ -216,9 +226,17 @@ mod tests {
         let mut extra = bytes.clone();
         extra.push(0);
         assert!(matches!(decode_proof(&extra), Err(TxError::InvalidProof)));
-        // A wildly large count rejects (no huge allocation).
-        let mut huge = bytes.clone();
-        huge[0..8].copy_from_slice(&[0u8; 8]); // proof_size = 0, harmless
-        assert!(decode_proof(&huge).is_ok() || decode_proof(&huge).is_err()); // no panic
+    }
+
+    #[test]
+    fn forged_count_does_not_amplify_allocation() {
+        // 16 bytes claiming 1,000,000 leaves with none following: must reject
+        // without reserving for a million entries (capacity is bounded by the
+        // remaining bytes, so no multi-MB allocation off a few bytes).
+        let mut forged = Vec::new();
+        forged.extend_from_slice(&0u64.to_le_bytes()); // proof_size
+        forged.extend_from_slice(&0u32.to_le_bytes()); // root len = 0
+        forged.extend_from_slice(&1_000_000u32.to_le_bytes()); // leaf_count, nothing follows
+        assert!(matches!(decode_proof(&forged), Err(TxError::InvalidProof)));
     }
 }
