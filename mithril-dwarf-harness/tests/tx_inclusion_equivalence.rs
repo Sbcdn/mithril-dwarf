@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use mithril_common::crypto_helper::{
-    MKMap, MKMapNode, MKTree, MKTreeNode as UpNode, MKTreeStoreInMemory,
+    MKMap, MKMapNode, MKMapProof as UpMapProof, MKTree, MKTreeNode as UpNode, MKTreeStoreInMemory,
 };
 use mithril_common::entities::{
     BlockNumber, BlockRange, CardanoBlockTransactionMkTreeNode, CardanoTransaction, SlotNumber,
@@ -473,5 +473,53 @@ fn dwarf_rejects_tampered_proof() {
             Some(false),
             "accepted or panicked on tampered byte {flip}"
         );
+    }
+}
+
+// --- Differential fuzz: dwarf is never less strict than the real upstream ---
+
+fn upstream_accepts(bytes: &[u8]) -> bool {
+    UpMapProof::<BlockRange>::from_bytes(bytes)
+        .map(|p| p.verify().is_ok())
+        .unwrap_or(false)
+}
+
+fn dwarf_accepts(bytes: &[u8]) -> bool {
+    transcode(bytes)
+        .map(|p| p.verify() == Ok(()))
+        .unwrap_or(false)
+}
+
+/// Cert-harness-style soundness gate: over every single-byte mutation of valid
+/// upstream proofs (single- and multi-range), dwarf may never ACCEPT a proof the
+/// real upstream `MKMapProof` REJECTS — a mutation can only ever make dwarf
+/// stricter, never looser.
+#[test]
+fn dwarf_never_accepts_what_upstream_rejects() {
+    let single = upstream_proof(&sample_txs(), &[0usize, 2]).0;
+    let multi_txs = vec![
+        tx(&"11".repeat(32), 3, 30, &"a1".repeat(32)),
+        tx(&"22".repeat(32), 8, 80, &"a2".repeat(32)),
+        tx(&"33".repeat(32), 20, 200, &"a3".repeat(32)),
+        tx(&"44".repeat(32), 35, 350, &"a4".repeat(32)),
+        tx(&"55".repeat(32), 50, 500, &"a5".repeat(32)),
+    ];
+    let multi = upstream_proof_multi(&multi_txs, &[0usize, 2, 4]).0;
+
+    for bytes in [single, multi] {
+        assert!(
+            upstream_accepts(&bytes) && dwarf_accepts(&bytes),
+            "baseline proof must be accepted by both",
+        );
+        for i in 0..bytes.len() {
+            for b in [0x01u8, 0x40, 0xff] {
+                let mut m = bytes.clone();
+                m[i] ^= b;
+                assert!(
+                    !dwarf_accepts(&m) || upstream_accepts(&m),
+                    "byte {i} ^ {b:#x}: dwarf accepted a proof the upstream rejects",
+                );
+            }
+        }
     }
 }
