@@ -5,10 +5,11 @@
 //! only with cost models, behind the `script_data_hash` binding, byte-exact.
 
 use mithril_dwarf::tx_parsing::{
-    ScriptLanguage, cost_models_to_wire, locate_tx_components, script_hash,
+    ScriptLanguage, cost_models_to_wire, datum_hash, locate_tx_components, script_hash,
 };
 
 const C_REDEEMER: u8 = 0x01;
+const C_WITNESS_DATUM: u8 = 0x04;
 const C_SCRIPT: u8 = 0x05;
 
 fn v1_costs() -> Vec<i64> {
@@ -86,6 +87,43 @@ fn locate_extracts_real_redeemers_behind_binding() {
     let mut bad = v1_costs();
     bad[0] += 1;
     assert!(locate_tx_components(&tx, Some(&cost_models_to_wire(&[(0u8, bad)]))).is_err());
+}
+
+#[test]
+fn locate_extracts_real_witness_datum() {
+    let tx = hex::decode(include_str!("test_data/tx_scripts/datum_tx.hex").trim()).unwrap();
+    let v1: Vec<i64> = serde_json::from_str(include_str!(
+        "test_data/tx_scripts/datum_tx_epoch327_v1_costs.json"
+    ))
+    .unwrap();
+    let onchain = include_str!("test_data/tx_scripts/datum_tx_witness_datum_hash.hex").trim();
+    let wire = cost_models_to_wire(&[(0u8, v1)]);
+
+    let components = locate_tx_components(&tx, Some(&wire)).expect("locate datum tx");
+    let datums: Vec<_> = components
+        .iter()
+        .filter(|c| c.component_type == C_WITNESS_DATUM)
+        .collect();
+    assert_eq!(datums.len(), 1, "expected one witness datum");
+
+    let d = datums[0];
+    // byte-exact: the datum CBOR appears verbatim in the tx.
+    assert!(
+        tx.windows(d.component_bytes.len())
+            .any(|w| w == d.component_bytes),
+        "datum is not a sub-slice of tx_bytes",
+    );
+    // locator = the real on-chain datum hash, and is self-certifying.
+    assert_eq!(
+        hex::encode(&d.locator),
+        onchain,
+        "locator != on-chain datum hash"
+    );
+    assert_eq!(
+        datum_hash(&d.component_bytes).to_vec(),
+        d.locator,
+        "locator != blake2b256(datum)",
+    );
 }
 
 #[test]

@@ -14,7 +14,7 @@
 use pallas_codec::minicbor;
 use pallas_primitives::conway::{PlutusData, RedeemerTag, Redeemers, Tx};
 
-use super::hashes::{ScriptLanguage, script_hash};
+use super::hashes::{ScriptLanguage, datum_hash, script_hash};
 use super::script_data::verify_decoded;
 
 /// `tx_parsing` failure — wrong/garbage input, never a panic.
@@ -28,9 +28,9 @@ pub enum TxParseError {
     ScriptDataMismatch,
 }
 
-// §5 type tags: 0x02 inline datum, 0x03 output datum-hash, 0x04 witness datum
-// added as each lands.
+// §5 type tags: 0x02 inline datum, 0x03 output datum-hash added as each lands.
 const C_REDEEMER: u8 = 0x01;
+const C_WITNESS_DATUM: u8 = 0x04;
 const C_SCRIPT: u8 = 0x05;
 
 /// A located transaction component: a byte-exact sub-slice of `tx_bytes` plus a
@@ -58,8 +58,25 @@ pub fn locate_tx_components(
     if let Some(cost_models) = cost_models {
         verify_decoded(&tx, cost_models)?;
         extract_redeemers(&tx, &mut out)?;
+        extract_witness_datums(&tx, &mut out);
     }
     Ok(out)
+}
+
+/// `0x04` witness datum: component_bytes = the datum's original CBOR (`KeepRaw`,
+/// byte-exact); locator = `blake2b256(component_bytes)` = the datum hash, so it's
+/// self-certifying. Bound to the tx by `script_data_hash` (verified above).
+fn extract_witness_datums(tx: &Tx, out: &mut Vec<TxComponent>) {
+    if let Some(v) = &tx.transaction_witness_set.plutus_data {
+        for d in v.iter() {
+            let bytes = d.raw_cbor();
+            out.push(TxComponent {
+                component_type: C_WITNESS_DATUM,
+                locator: datum_hash(bytes).to_vec(),
+                component_bytes: bytes.to_vec(),
+            });
+        }
+    }
 }
 
 fn redeemer_tag(tag: &RedeemerTag) -> u8 {
