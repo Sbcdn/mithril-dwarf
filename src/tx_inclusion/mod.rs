@@ -6,11 +6,15 @@
 //! parses by slicing; the guest verifies via [`ckb_merkle_mountain_range`]
 //! with a Blake2s256 merge and binds the result to the certified root.
 
+#[cfg(feature = "host")]
+mod host;
 mod leaf;
 mod node;
 mod proof;
 mod wire;
 
+#[cfg(feature = "host")]
+pub use host::{tx_proof_to_wire_v1, tx_proof_to_wire_v2};
 pub use leaf::{build_tx_leaf_v1, build_tx_leaf_v2, TxLeafInput, MAX_TX_LEAF_LEN};
 pub use node::{merge_nodes, MKTreeNode, MergeMKTreeNode};
 pub use proof::{BlockRange, MKMapProof, MKProof, TxError};

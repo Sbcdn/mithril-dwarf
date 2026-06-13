@@ -17,7 +17,7 @@ categories = ["cryptography::cryptocurrencies", "cryptography"]
 
 [features]
 default = []
-host = ["dep:anyhow", "dep:chrono", "dep:mithril-client", "dep:mithril-common", "dep:mithril-stm"]
+host = ["dep:anyhow", "dep:chrono", "dep:mithril-client", "dep:mithril-common", "dep:mithril-stm", "dep:serde", "dep:serde_json", "dep:bincode2"]
 # Reserved no-op feature so `#[cfg(feature = "future_snark")]` branches in
 # the host adapter compile cleanly without a `check-cfg` warning. dwarf
 # does not currently enable the SNARK proof system on its mithril deps.
@@ -57,9 +57,15 @@ risc0-zkvm = { version = "^3.0.3", default-features = false, features = ['std'] 
 # explicitly when ready to bump.
 anyhow = { version = "1.0.94", optional = true }
 chrono = { version = "0.4.41", optional = true }
-mithril-client = { git = "https://github.com/Sbcdn/mithril.git", rev = "7e787deefd079c3f2b3160785e58a6b4affc1340", features = ["num-integer-backend", "rustls"], optional = true }
+mithril-client = { git = "https://github.com/Sbcdn/mithril.git", rev = "7e787deefd079c3f2b3160785e58a6b4affc1340", features = ["num-integer-backend", "rustls", "unstable"], optional = true }
 mithril-common = { git = "https://github.com/Sbcdn/mithril.git", rev = "7e787deefd079c3f2b3160785e58a6b4affc1340", features = ["num-integer-backend"], optional = true }
 mithril-stm = { git = "https://github.com/Sbcdn/mithril.git", rev = "7e787deefd079c3f2b3160785e58a6b4affc1340", features = ["benchmark-internals", "num-integer-backend"], optional = true }
+
+# Host-only: the tx-inclusion proof transcoder (upstream json/bincode -> custom
+# wire). serde mirror decodes the upstream proof; never enters the guest.
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+bincode2 = { package = "bincode", version = "2.0.1", features = ["serde"], optional = true }
 
 # ============================================================
 # CRITICAL: RISC0 PRECOMPILE PATCHES — DOWNSTREAM GUEST REQUIRED

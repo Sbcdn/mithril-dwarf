@@ -3,76 +3,35 @@
 //! Non-circular — the reference is upstream's REAL `MKMap`/`MKMapProof` code
 //! (the pinned `mithril-common`, whose tx-merkle source is byte-identical to
 //! iog/main and ed25519-2.1.1 so it links alongside dwarf). We build a genuine
-//! upstream proof, transcode its bincode into dwarf's types via a serde mirror,
-//! and assert dwarf's verify / compute_root / leaf / contains all match.
+//! upstream proof, run it through dwarf's host transcoder + guest wire decoder
+//! (the production path), and assert dwarf's verify / compute_root / leaf /
+//! contains all match upstream.
 
 use std::sync::Arc;
 
-use mithril_common::crypto_helper::{
-    MKMap, MKMapNode, MKTree, MKTreeNode as UpNode, MKTreeStoreInMemory,
-};
+use mithril_common::crypto_helper::{MKMap, MKMapNode, MKTree, MKTreeNode as UpNode, MKTreeStoreInMemory};
 use mithril_common::entities::{
     BlockNumber, BlockRange, CardanoBlockTransactionMkTreeNode, CardanoTransaction, SlotNumber,
 };
-use serde::Deserialize;
 
 use mithril_dwarf::tx_inclusion::{
-    build_tx_leaf_v1, build_tx_leaf_v2, decode_proof, encode_proof, verify_tx_inclusion_v1,
-    verify_tx_inclusion_v2, BlockRange as DwarfBlockRange, MKMapProof as DwarfMapProof,
-    MKProof as DwarfProof, MKTreeNode as DwarfNode, TxError, TxLeafInput, MAX_TX_LEAF_LEN,
+    build_tx_leaf_v1, build_tx_leaf_v2, decode_proof, encode_proof, tx_proof_to_wire_v1,
+    tx_proof_to_wire_v2, verify_tx_inclusion_v1, verify_tx_inclusion_v2,
+    MKMapProof as DwarfMapProof, MKTreeNode as DwarfNode, TxError, TxLeafInput, MAX_TX_LEAF_LEN,
 };
 
-// --- Transcoder: upstream bincode-2 MKMapProof -> dwarf types (host side) ---
-// Mirrors upstream field order (`Arc<MKTreeNode>` serde == `MKTreeNode`).
-
-#[derive(Deserialize)]
-struct ProofMirror {
-    inner_root: UpNode,
-    inner_leaves: Vec<(u64, UpNode)>,
-    inner_proof_size: u64,
-    inner_proof_items: Vec<UpNode>,
-}
-
-#[derive(Deserialize)]
-struct MapProofMirror {
-    master_proof: ProofMirror,
-    sub_proofs: Vec<(BlockRange, MapProofMirror)>,
-}
-
-fn node(up: &UpNode) -> DwarfNode {
-    DwarfNode::new(up.to_vec())
-}
-
-fn proof(m: &ProofMirror) -> DwarfProof {
-    DwarfProof {
-        inner_root: node(&m.inner_root),
-        inner_leaves: m.inner_leaves.iter().map(|(p, n)| (*p, node(n))).collect(),
-        inner_proof_size: m.inner_proof_size,
-        inner_proof_items: m.inner_proof_items.iter().map(node).collect(),
-    }
-}
-
-fn map_proof(m: &MapProofMirror) -> DwarfMapProof {
-    DwarfMapProof {
-        master_proof: proof(&m.master_proof),
-        sub_proofs: m
-            .sub_proofs
-            .iter()
-            .map(|(r, sub)| (DwarfBlockRange { start: *r.start, end: *r.end }, map_proof(sub)))
-            .collect(),
-    }
-}
+// Full production path: upstream proof bytes -> dwarf's host transcoder (wire)
+// -> dwarf's guest decoder. Exercises both ends dwarf owns, not a harness-local
+// mirror — so the oracle also gates `tx_proof_to_wire_*`.
 
 fn transcode(upstream_bincode: &[u8]) -> Result<DwarfMapProof, ()> {
-    let (mirror, _): (MapProofMirror, _) =
-        bincode2::serde::decode_from_slice(upstream_bincode, bincode2::config::standard())
-            .map_err(|_| ())?;
-    Ok(map_proof(&mirror))
+    let wire = tx_proof_to_wire_v2(upstream_bincode).map_err(|_| ())?;
+    decode_proof(&wire).map_err(|_| ())
 }
 
 fn transcode_json(json: &[u8]) -> Result<DwarfMapProof, ()> {
-    let mirror: MapProofMirror = serde_json::from_slice(json).map_err(|_| ())?;
-    Ok(map_proof(&mirror))
+    let wire = tx_proof_to_wire_v1(json).map_err(|_| ())?;
+    decode_proof(&wire).map_err(|_| ())
 }
 
 // --- Test fixtures built with upstream's real code ---

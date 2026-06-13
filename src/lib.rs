@@ -53,8 +53,8 @@ pub mod tx_parsing;
 
 #[cfg(feature = "host")]
 pub use mithril_client::{
-    AggregatorDiscoveryType, CardanoTransactionsProofs, Client, ClientBuilder,
-    GenesisVerificationKey,
+    AggregatorDiscoveryType, CardanoTransactionsProofs, CardanoTransactionsProofsV2, Client,
+    ClientBuilder, GenesisVerificationKey,
 };
 #[cfg(feature = "host")]
 pub use mithril_common::{

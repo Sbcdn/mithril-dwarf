@@ -56,10 +56,4 @@ blst = "=0.3.15"
 # specific divergences. Same version pins as the production runtime.
 ed25519-dalek = "=2.1.1"
 blake2 = "=0.10.6"
-
-# tx_inclusion_equivalence oracle: decode upstream's bincode-2 MKMapProof into a
-# serde mirror to transcode into dwarf's types. (`bincode` above is 1.x for the
-# cert corpus; the proof wire is bincode 2.)
-bincode2 = { package = "bincode", version = "2.0.1", features = ["serde"] }
-serde = { version = "1", features = ["derive"] }
 sha2 = "=0.10.9"
