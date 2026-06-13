@@ -174,6 +174,12 @@ fn extract_redeemers(tx: &Tx, out: &mut Vec<TxComponent>) -> Result<(), TxParseE
 /// is `blake2b224(component_bytes)` by construction (self-certifying). Native
 /// scripts are hashed over their CBOR; Plutus over their raw bytes — pallas hands
 /// the right form for each (`KeepRaw` vs raw).
+///
+/// CAVEAT: a witness script is self-certifying but NOT bound to the proven tx —
+/// the witness set is not in the txid preimage, and a spending script's hash
+/// lives in the spent UTxO's credential (out of T-local scope). The consumer must
+/// therefore treat a `0x05` script as "a script with this hash," keyed/matched by
+/// its hash, never as proof that the tx uses it.
 fn push_script(out: &mut Vec<TxComponent>, lang: ScriptLanguage, script_bytes: &[u8]) {
     let mut component_bytes = Vec::with_capacity(1 + script_bytes.len());
     component_bytes.push(lang as u8);
