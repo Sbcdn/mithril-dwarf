@@ -68,6 +68,11 @@ fn decode_cost_models(wire: &[u8]) -> Result<LanguageViews, TxParseError> {
 /// mismatch / malformed input is an `Err`, never a panic.
 pub fn verify_script_data(tx_bytes: &[u8], cost_models: &[u8]) -> Result<(), TxParseError> {
     let tx: Tx = minicbor::decode(tx_bytes).map_err(|_| TxParseError::Decode)?;
+    verify_decoded(&tx, cost_models)
+}
+
+/// Same check on an already-decoded `Tx`, so the locator doesn't decode twice.
+pub(super) fn verify_decoded(tx: &Tx, cost_models: &[u8]) -> Result<(), TxParseError> {
     match tx.transaction_body.script_data_hash {
         Some(provided) => {
             let language_views = decode_cost_models(cost_models)?;
