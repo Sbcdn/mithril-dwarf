@@ -33,12 +33,28 @@ tx-inclusion = ["dep:ckb-merkle-mountain-range"]
 # Cardano transaction parsing for oaks_tx. Phase A = txid hasher (blake2b only,
 # no extra deps); Phase B (pallas CBOR-locate + script/datum hashes) lands later.
 tx-parsing = []
+# Phase B: byte-exact CBOR component locate (§5) + script_data_hash binding.
+# pallas-primitives needs `serde` (derive only) to build; NOT `json` — that pulls
+# serde_json. No pallas-traverse (it force-enables json). Validated for the
+# riscv32im-risc0-zkvm-elf guest target. cryptoxide-based, no crypto patches.
+tx-components = [
+    "tx-parsing",
+    "dep:pallas-primitives",
+    "dep:pallas-codec",
+    "dep:pallas-crypto",
+]
 
 [dependencies]
 blake2 = "0.10.6"
 fixed = "1.28"
 # Merkle Mountain Range proof verify for `tx-inclusion`; no_std (no serde).
 ckb-merkle-mountain-range = { version = "0.6.1", default-features = false, optional = true }
+
+# tx-components (Phase B): Conway tx decode + KeepRaw byte-exact spans + blake2b.
+# `serde` feature = derive only (no serde_json / no JSON in guest). Pinned.
+pallas-primitives = { version = "=0.32.1", default-features = false, features = ["serde"], optional = true }
+pallas-codec = { version = "=0.32.1", default-features = false, optional = true }
+pallas-crypto = { version = "=0.32.1", default-features = false, optional = true }
 
 crypto-bigint = { version = "0.5.5", features = ["alloc"] }
 crypto-ratio = "0.2.0"

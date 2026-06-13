@@ -5,11 +5,16 @@
 //!   wrong id and `verify_tx_inclusion*` rejects — safe by construction.
 //! - [`script_hash`] / [`datum_hash`] — the `0x05` script / datum leaf hashes.
 //!
-//! All blake2b only (no CBOR parse, no pallas). The CBOR component locator that
-//! feeds these the exact byte slices lands under a separate feature.
+//! [`cardano_tx_id`] / [`script_hash`] / [`datum_hash`] are blake2b only (no CBOR
+//! parse, no pallas). [`locate_tx_components`] (feature `tx-components`) decodes
+//! the tx CBOR with pallas + `KeepRaw` and feeds these the exact byte slices.
 
 mod hashes;
+#[cfg(feature = "tx-components")]
+mod locate;
 mod txid;
 
 pub use hashes::{ScriptLanguage, datum_hash, script_hash};
+#[cfg(feature = "tx-components")]
+pub use locate::{TxComponent, TxParseError, locate_tx_components};
 pub use txid::cardano_tx_id;

@@ -23,7 +23,7 @@ name = "fetch_tx_proof_v2"
 path = "src/bin/fetch_tx_proof_v2.rs"
 
 [dependencies]
-mithril-dwarf = { path = "..", features = ["host", "tx-inclusion", "tx-parsing"] }
+mithril-dwarf = { path = "..", features = ["host", "tx-inclusion", "tx-parsing", "tx-components"] }
 
 # Upstream Mithril, pinned to a specific rev so the comparison reference
 # can never silently drift between cargo invocations.
