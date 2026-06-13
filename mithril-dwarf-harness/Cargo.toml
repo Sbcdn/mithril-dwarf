@@ -14,6 +14,14 @@ path = "src/bin/fetch_certificates.rs"
 name = "audit"
 path = "src/bin/audit.rs"
 
+[[bin]]
+name = "fetch_tx_proof"
+path = "src/bin/fetch_tx_proof.rs"
+
+[[bin]]
+name = "fetch_tx_proof_v2"
+path = "src/bin/fetch_tx_proof_v2.rs"
+
 [dependencies]
 mithril-dwarf = { path = "..", features = ["host", "tx-inclusion", "tx-parsing"] }
 
@@ -32,6 +40,10 @@ hex            = "0.4"
 async-trait    = "0.1.89"
 slog           = "2.8.2"
 chrono         = "0.4.41"
+# fetch_tx_proof_v2: the v2/CardanoBlocksTransactions proof is only served by the
+# testing-preview aggregator; the SDK's v2 verify path needs the preview genesis,
+# so we capture the fixture with a plain GET (rustls, no openssl).
+reqwest        = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # Test-only: dwarf_rejects_bls_identity_in_cert in tests/equivalence.rs
 # pins blst's identity-point behaviour. Keep the version pinned to the
