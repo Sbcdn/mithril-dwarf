@@ -29,21 +29,24 @@ fn v1_costs() -> Vec<i64> {
 }
 
 #[test]
-fn locate_extracts_real_witness_script() {
-    let tx = hex::decode(include_str!("test_data/tx_scripts/plutus_tx.hex").trim()).unwrap();
-    let onchain = include_str!("test_data/tx_scripts/plutus_tx_v1_script.hex").trim();
+fn locate_extracts_bound_mint_script() {
+    // A native minting script: its hash IS a mint policy id in the body, so it's
+    // T-locally bound and emitted as a `0x05` component.
+    let tx = hex::decode(include_str!("test_data/tx_scripts/mint_tx.hex").trim()).unwrap();
+    let txid = h32(include_str!("test_data/tx_scripts/mint_tx_txid.hex").trim());
+    let policy = include_str!("test_data/tx_scripts/mint_tx_policy.hex").trim();
 
-    let components = locate_tx_components(&tx, &h32(PLUTUS_TXID), None).expect("locate plutus tx");
+    let components = locate_tx_components(&tx, &txid, None).expect("locate mint tx");
     let scripts: Vec<_> = components
         .iter()
         .filter(|c| c.component_type == C_SCRIPT)
         .collect();
-    assert_eq!(scripts.len(), 1, "expected exactly one witness script");
+    assert_eq!(scripts.len(), 1, "expected the bound native mint script");
 
     let s = scripts[0];
     assert_eq!(
         s.component_bytes[0],
-        ScriptLanguage::PlutusV1 as u8,
+        ScriptLanguage::Native as u8,
         "wrong language tag"
     );
     let script_bytes = &s.component_bytes[1..];
@@ -51,15 +54,11 @@ fn locate_extracts_real_witness_script() {
         tx.windows(script_bytes.len()).any(|w| w == script_bytes),
         "script bytes are not a sub-slice of tx_bytes",
     );
+    assert_eq!(hex::encode(&s.locator), policy, "locator != mint policy id");
     assert_eq!(
-        hex::encode(&s.locator),
-        onchain,
-        "locator != on-chain script hash"
-    );
-    assert_eq!(
-        script_hash(ScriptLanguage::PlutusV1, script_bytes).to_vec(),
+        script_hash(ScriptLanguage::Native, script_bytes).to_vec(),
         s.locator,
-        "locator != blake2b224(language ‖ script_bytes)",
+        "locator != blake2b224(0x00 ‖ native_cbor)",
     );
 }
 

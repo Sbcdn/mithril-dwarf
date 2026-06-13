@@ -8,7 +8,6 @@ use mithril_dwarf::tx_parsing::{
     TxParseError, cost_models_to_wire, locate_tx_components, verify_script_data,
 };
 
-const C_SCRIPT: u8 = 0x05;
 const PLUTUS_TXID: &str = "f8f7f35d9d383db586f86cca89abe9cf1592b8c93e34146a6c6757261218cccb";
 
 fn h32(s: &str) -> [u8; 32] {
@@ -21,45 +20,49 @@ fn v1_costs() -> Vec<i64> {
     serde_json::from_str(include_str!("test_data/tx_scripts/epoch297_v1_costs.json")).unwrap()
 }
 
-/// Flip every byte of a real tx (under the real txid + cost models). The **bound**
-/// components — body-resident `0x02`/`0x03` (txid-committed) and script_data-bound
-/// `0x01`/`0x04` — must be tamper-proof: no single-byte mutation may forge a
-/// different *accepted* bound component. Witness scripts (`0x05`) are excluded:
-/// they are self-certifying but NOT bound to the proven tx (the witness set isn't
-/// in the txid preimage, and spending-script credentials live in the spent UTxO,
-/// out of T-local scope) — see the script-binding caveat. So a script swap is
-/// *expected* to change the set; a bound-component change would be a soundness
-/// hole.
-fn bound(c: &mithril_dwarf::tx_parsing::TxComponent) -> bool {
-    c.component_type != C_SCRIPT
-}
-
-#[test]
-fn no_single_byte_mutation_forges_a_bound_component() {
-    let tx = plutus_tx();
-    let txid = h32(PLUTUS_TXID);
-    let wire = cost_models_to_wire(&[(0u8, v1_costs())]);
-    let baseline = locate_tx_components(&tx, &txid, Some(&wire)).expect("baseline");
-    let want: Vec<_> = baseline.iter().filter(|c| bound(c)).cloned().collect();
-
+/// Flip every byte of a real tx (×3 patterns) and assert the soundness invariant:
+/// no mutation may produce an *accepted component that isn't a real component of
+/// the original tx*. A tamper either rejects (decode / txid / script_data /
+/// unbound-script-drop) or leaves a subset of the real components — it can never
+/// forge a new one. With every extracted type bound (incl. `0x05` after B), this
+/// is the full anti-forgery gate.
+fn no_mutation_forges_a_component(tx: &[u8], txid: &[u8; 32], cost_models: Option<&[u8]>) {
+    let baseline = locate_tx_components(tx, txid, cost_models).expect("baseline locate");
     for i in 0..tx.len() {
         for b in [0x01u8, 0x55, 0xff] {
-            let mut m = tx.clone();
+            let mut m = tx.to_vec();
             m[i] ^= b;
-            let r = std::panic::catch_unwind(|| locate_tx_components(&m, &txid, Some(&wire)));
+            let r = std::panic::catch_unwind(|| locate_tx_components(&m, txid, cost_models));
             match r {
                 Ok(Ok(comps)) => {
-                    let got: Vec<_> = comps.into_iter().filter(bound).collect();
-                    assert_eq!(
-                        got, want,
-                        "byte {i} ^ {b:#x}: a BOUND component (0x01-0x04) was forged",
-                    );
+                    for c in &comps {
+                        assert!(
+                            baseline.contains(c),
+                            "byte {i} ^ {b:#x}: forged a component absent from the real tx",
+                        );
+                    }
                 }
                 Ok(Err(_)) => {}
                 Err(_) => panic!("panicked on byte {i} ^ {b:#x}"),
             }
         }
     }
+}
+
+/// Redeemer tx (PlutusV1, with cost models): `0x01` redeemers + output datums.
+#[test]
+fn no_mutation_forges_a_component_redeemer_tx() {
+    let wire = cost_models_to_wire(&[(0u8, v1_costs())]);
+    no_mutation_forges_a_component(&plutus_tx(), &h32(PLUTUS_TXID), Some(&wire));
+}
+
+/// Native minting tx: exercises the B-bound `0x05` script — a mutated script
+/// drops (hash leaves the mint set) but can never be forged into an accepted one.
+#[test]
+fn no_mutation_forges_a_component_mint_tx() {
+    let tx = hex::decode(include_str!("test_data/tx_scripts/mint_tx.hex").trim()).unwrap();
+    let txid = h32(include_str!("test_data/tx_scripts/mint_tx_txid.hex").trim());
+    no_mutation_forges_a_component(&tx, &txid, None);
 }
 
 /// A real tx's script_data verifies under its real cost model — and under no

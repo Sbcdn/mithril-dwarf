@@ -11,9 +11,11 @@
 //! and always emitted. `0x01`/`0x04` are bound only via `script_data_hash`, so
 //! they are emitted only when `cost_models` is supplied and that binding verifies.
 
+use std::collections::BTreeSet;
+
 use pallas_codec::minicbor;
 use pallas_primitives::babbage::{DatumOption, GenTransactionOutput};
-use pallas_primitives::conway::{PlutusData, RedeemerTag, Redeemers, Tx};
+use pallas_primitives::conway::{PlutusData, RedeemerTag, Redeemers, ScriptRef, Tx};
 
 use super::hashes::{ScriptLanguage, datum_hash, script_hash};
 use super::script_data::verify_decoded;
@@ -170,47 +172,89 @@ fn extract_redeemers(tx: &Tx, out: &mut Vec<TxComponent>) -> Result<(), TxParseE
     Ok(())
 }
 
+/// `script_hash(lang, bytes)` of a reference script in an output.
+fn script_ref_hash(sref: &ScriptRef) -> [u8; 28] {
+    match sref {
+        ScriptRef::NativeScript(s) => script_hash(ScriptLanguage::Native, s.raw_cbor()),
+        ScriptRef::PlutusV1Script(s) => script_hash(ScriptLanguage::PlutusV1, s.as_ref()),
+        ScriptRef::PlutusV2Script(s) => script_hash(ScriptLanguage::PlutusV2, s.as_ref()),
+        ScriptRef::PlutusV3Script(s) => script_hash(ScriptLanguage::PlutusV3, s.as_ref()),
+    }
+}
+
+/// The script hashes a witness script may legitimately match T-locally: mint
+/// policy ids and output reference scripts, both committed by the txid. A witness
+/// script whose hash is here can't have been substituted without a preimage
+/// attack on the body.
+fn bound_script_hashes(tx: &Tx) -> BTreeSet<[u8; 28]> {
+    let mut set = BTreeSet::new();
+    if let Some(mint) = &tx.transaction_body.mint {
+        for (policy, _) in mint.iter() {
+            set.insert(**policy);
+        }
+    }
+    for output in tx.transaction_body.outputs.iter() {
+        if let GenTransactionOutput::PostAlonzo(o) = output {
+            if let Some(sref) = &o.script_ref {
+                set.insert(script_ref_hash(&sref.0));
+            }
+        }
+    }
+    set
+}
+
 /// `0x05` script: `component_bytes = language_tag ‖ script_bytes`, so the locator
 /// is `blake2b224(component_bytes)` by construction (self-certifying). Native
 /// scripts are hashed over their CBOR; Plutus over their raw bytes — pallas hands
 /// the right form for each (`KeepRaw` vs raw).
 ///
-/// CAVEAT: a witness script is self-certifying but NOT bound to the proven tx —
-/// the witness set is not in the txid preimage, and a spending script's hash
-/// lives in the spent UTxO's credential (out of T-local scope). The consumer must
-/// therefore treat a `0x05` script as "a script with this hash," keyed/matched by
-/// its hash, never as proof that the tx uses it.
-fn push_script(out: &mut Vec<TxComponent>, lang: ScriptLanguage, script_bytes: &[u8]) {
+/// Only witness scripts whose hash is T-locally bound (a mint policy id or an
+/// output reference script) are emitted — the witness set isn't in the txid
+/// preimage, so an unbound script could be substituted. SPENDING scripts (whose
+/// hash lives in the spent UTxO's credential) are NOT bound T-locally and are
+/// therefore skipped here; proving them needs the input UTxOs (a separate proof,
+/// out of `oaks_tx` scope).
+fn push_bound_script(
+    out: &mut Vec<TxComponent>,
+    bound: &BTreeSet<[u8; 28]>,
+    lang: ScriptLanguage,
+    script_bytes: &[u8],
+) {
+    let hash = script_hash(lang, script_bytes);
+    if !bound.contains(&hash) {
+        return;
+    }
     let mut component_bytes = Vec::with_capacity(1 + script_bytes.len());
     component_bytes.push(lang as u8);
     component_bytes.extend_from_slice(script_bytes);
     out.push(TxComponent {
         component_type: C_SCRIPT,
-        locator: script_hash(lang, script_bytes).to_vec(),
+        locator: hash.to_vec(),
         component_bytes,
     });
 }
 
 fn extract_scripts(tx: &Tx, out: &mut Vec<TxComponent>) {
+    let bound = bound_script_hashes(tx);
     let ws = &tx.transaction_witness_set;
     if let Some(v) = &ws.native_script {
         for s in v.iter() {
-            push_script(out, ScriptLanguage::Native, s.raw_cbor());
+            push_bound_script(out, &bound, ScriptLanguage::Native, s.raw_cbor());
         }
     }
     if let Some(v) = &ws.plutus_v1_script {
         for s in v.iter() {
-            push_script(out, ScriptLanguage::PlutusV1, s.as_ref());
+            push_bound_script(out, &bound, ScriptLanguage::PlutusV1, s.as_ref());
         }
     }
     if let Some(v) = &ws.plutus_v2_script {
         for s in v.iter() {
-            push_script(out, ScriptLanguage::PlutusV2, s.as_ref());
+            push_bound_script(out, &bound, ScriptLanguage::PlutusV2, s.as_ref());
         }
     }
     if let Some(v) = &ws.plutus_v3_script {
         for s in v.iter() {
-            push_script(out, ScriptLanguage::PlutusV3, s.as_ref());
+            push_bound_script(out, &bound, ScriptLanguage::PlutusV3, s.as_ref());
         }
     }
 }
