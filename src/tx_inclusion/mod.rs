@@ -15,8 +15,8 @@ mod wire;
 
 #[cfg(feature = "host")]
 pub use host::{tx_proof_to_wire_v1, tx_proof_to_wire_v2};
-pub use leaf::{build_tx_leaf_v1, build_tx_leaf_v2, TxLeafInput, MAX_TX_LEAF_LEN};
-pub use node::{merge_nodes, MKTreeNode, MergeMKTreeNode};
+pub use leaf::{MAX_TX_LEAF_LEN, TxLeafInput, build_tx_leaf_v1, build_tx_leaf_v2};
+pub use node::MKTreeNode;
 pub use proof::{BlockRange, MKMapProof, MKProof, TxError};
 pub use wire::{decode_proof, encode_proof};
 

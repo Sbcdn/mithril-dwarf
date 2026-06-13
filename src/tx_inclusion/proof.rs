@@ -7,7 +7,7 @@
 use ckb_merkle_mountain_range::MerkleProof;
 
 use super::leaf::write_u64_dec_into;
-use super::node::{merge_nodes, MKTreeNode, MergeMKTreeNode};
+use super::node::{MKTreeNode, MergeMKTreeNode, merge_nodes};
 
 /// Failure reasons for the inclusion path. `Copy`, no payload — failure
 /// allocates nothing, and the guest treats any `Err` as "reject".
@@ -130,7 +130,7 @@ impl MKMapProof {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ckb_merkle_mountain_range::{util::MemStore, MMR};
+    use ckb_merkle_mountain_range::{MMR, util::MemStore};
 
     // Build a real MMR with the Blake2s merge via ckb-mmr, produce a genuine
     // proof, wrap it in our MKProof, and assert verify()/contains behave. This
@@ -140,7 +140,10 @@ mod tests {
         let store = MemStore::<MKTreeNode>::default();
         let mut mmr = MMR::<MKTreeNode, MergeMKTreeNode, _>::new(0, &store);
         let leaves: Vec<MKTreeNode> = (0u8..5).map(|i| MKTreeNode::new(vec![i; 8])).collect();
-        let positions: Vec<u64> = leaves.iter().map(|l| mmr.push(l.clone()).unwrap()).collect();
+        let positions: Vec<u64> = leaves
+            .iter()
+            .map(|l| mmr.push(l.clone()).unwrap())
+            .collect();
         let root = mmr.get_root().unwrap();
 
         // Prove leaves 1 and 3.
@@ -150,7 +153,10 @@ mod tests {
 
         let mkproof = MKProof {
             inner_root: root.clone(),
-            inner_leaves: proved.iter().map(|&i| (positions[i], leaves[i].clone())).collect(),
+            inner_leaves: proved
+                .iter()
+                .map(|&i| (positions[i], leaves[i].clone()))
+                .collect(),
             inner_proof_size: genp.mmr_size(),
             inner_proof_items: genp.proof_items().to_vec(),
         };
@@ -169,7 +175,10 @@ mod tests {
     fn block_range_node_is_decimal_dash() {
         let n = BlockRange { start: 45, end: 60 }.to_node();
         assert_eq!(n.as_bytes(), b"45-60");
-        assert_eq!(BlockRange { start: 0, end: 15 }.to_node().as_bytes(), b"0-15");
+        assert_eq!(
+            BlockRange { start: 0, end: 15 }.to_node().as_bytes(),
+            b"0-15"
+        );
     }
 
     // SECURITY: the guest must reject any malformed proof with `Err`, never
@@ -209,7 +218,11 @@ mod tests {
         for (i, p) in cases.into_iter().enumerate() {
             let r = no_panic(move || p.verify());
             assert!(r.is_ok(), "MKProof::verify PANICKED on malformed case {i}");
-            assert_eq!(r.unwrap(), Err(TxError::ProofVerifyFailed), "case {i} should reject");
+            assert_eq!(
+                r.unwrap(),
+                Err(TxError::ProofVerifyFailed),
+                "case {i} should reject"
+            );
         }
     }
 
@@ -222,13 +235,19 @@ mod tests {
             inner_proof_items: vec![],
         };
         // Master alone (no sub) is just a bad MMR proof.
-        let p1 = MKMapProof { master_proof: bad_master.clone(), sub_proofs: vec![] };
+        let p1 = MKMapProof {
+            master_proof: bad_master.clone(),
+            sub_proofs: vec![],
+        };
         // With a sub-proof whose binding can't match.
         let p2 = MKMapProof {
             master_proof: bad_master.clone(),
             sub_proofs: vec![(
                 BlockRange { start: 0, end: 15 },
-                MKMapProof { master_proof: bad_master, sub_proofs: vec![] },
+                MKMapProof {
+                    master_proof: bad_master,
+                    sub_proofs: vec![],
+                },
             )],
         };
         for (i, p) in [p1, p2].into_iter().enumerate() {

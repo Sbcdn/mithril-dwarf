@@ -202,7 +202,13 @@ mod tests {
                 inner_proof_size: 1,
                 inner_proof_items: vec![],
             },
-            sub_proofs: vec![(BlockRange { start: 0, end: 15 }, MKMapProof { master_proof: leaf, sub_proofs: vec![] })],
+            sub_proofs: vec![(
+                BlockRange { start: 0, end: 15 },
+                MKMapProof {
+                    master_proof: leaf,
+                    sub_proofs: vec![],
+                },
+            )],
         }
     }
 

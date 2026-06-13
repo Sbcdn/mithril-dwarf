@@ -46,7 +46,15 @@ fn map_proof(m: &MapProofMirror) -> MKMapProof {
         sub_proofs: m
             .sub_proofs
             .iter()
-            .map(|(r, sub)| (BlockRange { start: *r.start, end: *r.end }, map_proof(sub)))
+            .map(|(r, sub)| {
+                (
+                    BlockRange {
+                        start: *r.start,
+                        end: *r.end,
+                    },
+                    map_proof(sub),
+                )
+            })
             .collect(),
     }
 }
@@ -54,8 +62,7 @@ fn map_proof(m: &MapProofMirror) -> MKMapProof {
 /// Transcode a **v1** (`CardanoTransactions`) proof — the aggregator's json form
 /// (`hex`-decoded from `MkSetProofMessagePart.proof`) — into the guest wire.
 pub fn tx_proof_to_wire_v1(json: &[u8]) -> Result<Vec<u8>, TxError> {
-    let mirror: MapProofMirror =
-        serde_json::from_slice(json).map_err(|_| TxError::InvalidProof)?;
+    let mirror: MapProofMirror = serde_json::from_slice(json).map_err(|_| TxError::InvalidProof)?;
     Ok(encode_proof(&map_proof(&mirror)))
 }
 

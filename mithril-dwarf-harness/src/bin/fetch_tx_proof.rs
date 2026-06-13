@@ -7,12 +7,13 @@
 //!
 //! Writes `tests/test_data/tx_proofs/mainnet_proof.json` + `mainnet_root.hex`.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use mithril_client::{Client, ClientBuilder};
 use std::fs;
 use std::path::PathBuf;
 
-const MAINNET_AGGREGATOR: &str = "https://aggregator.release-mainnet.api.mithril.network/aggregator";
+const MAINNET_AGGREGATOR: &str =
+    "https://aggregator.release-mainnet.api.mithril.network/aggregator";
 const MAINNET_GENESIS_KEY: &str = "5b3139312c36362c3134302c3138352c3133382c31312c3233372c3230372c3235302c3134342c32372c322c3138382c33302c31322c38312c3135352c3230342c31302c3137392c37352c32332c3133382c3139362c3231372c352c31342c32302c35372c37392c33392c3137365d";
 
 const TXS: &[&str] = &[
@@ -27,7 +28,10 @@ async fn main() -> Result<()> {
         .build()
         .map_err(|e| anyhow!("client build: {e}"))?;
 
-    println!("Fetching /proof/cardano-transaction for {} txs ...", TXS.len());
+    println!(
+        "Fetching /proof/cardano-transaction for {} txs ...",
+        TXS.len()
+    );
     let proofs = client
         .cardano_transaction()
         .get_proofs(TXS)
@@ -50,7 +54,9 @@ async fn main() -> Result<()> {
 
     // Certified root: verify() reconstructs it; read it out of the protocol message.
     use mithril_common::entities::{ProtocolMessage, ProtocolMessagePartKey};
-    let verified = proofs.verify().map_err(|e| anyhow!("upstream verify: {e}"))?;
+    let verified = proofs
+        .verify()
+        .map_err(|e| anyhow!("upstream verify: {e}"))?;
     let mut pmsg = ProtocolMessage::new();
     verified.fill_protocol_message(&mut pmsg);
     let merkle_root = pmsg
@@ -63,7 +69,10 @@ async fn main() -> Result<()> {
     fs::create_dir_all(&dir)?;
     fs::write(dir.join("mainnet_proof.json"), &proof_json)?;
     fs::write(dir.join("mainnet_root.hex"), merkle_root.as_bytes())?;
-    fs::write(dir.join("mainnet_txs.txt"), part.transactions_hashes.join("\n"))?;
+    fs::write(
+        dir.join("mainnet_txs.txt"),
+        part.transactions_hashes.join("\n"),
+    )?;
     println!("wrote {} (proof.json, root.hex, txs.txt)", dir.display());
     Ok(())
 }

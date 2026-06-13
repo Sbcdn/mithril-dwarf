@@ -14,19 +14,22 @@
 //!
 //! Writes `tests/test_data/tx_proofs/preview_v2_{proof.bin,root.hex,tx.txt}`.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 
-const PREVIEW_AGGREGATOR: &str = "https://aggregator.testing-preview.api.mithril.network/aggregator";
+const PREVIEW_AGGREGATOR: &str =
+    "https://aggregator.testing-preview.api.mithril.network/aggregator";
 
 /// A preview tx known to be in the `CardanoBlocksTransactions` tree. If the
 /// preview chain has pruned it, swap for any recent preview txid.
 const TX: &str = "5634d3558843a76a23d554b218b6316c624968d54abe8942bb8f55a29f252f58";
 
 async fn get_json(url: &str) -> Result<Value> {
-    let resp = reqwest::get(url).await.map_err(|e| anyhow!("GET {url}: {e}"))?;
+    let resp = reqwest::get(url)
+        .await
+        .map_err(|e| anyhow!("GET {url}: {e}"))?;
     if !resp.status().is_success() {
         return Err(anyhow!("GET {url}: status {}", resp.status()));
     }
@@ -47,7 +50,9 @@ async fn main() -> Result<()> {
     let item = ct["items"]
         .get(0)
         .ok_or_else(|| anyhow!("no certified tx items (tx not in v2 tree?)"))?;
-    let proof_hex = ct["proof"].as_str().ok_or_else(|| anyhow!("no proof hex"))?;
+    let proof_hex = ct["proof"]
+        .as_str()
+        .ok_or_else(|| anyhow!("no proof hex"))?;
 
     let tx_hash = item["transaction_hash"].as_str().unwrap_or_default();
     let block_hash = item["block_hash"].as_str().unwrap_or_default();
@@ -76,6 +81,9 @@ async fn main() -> Result<()> {
         dir.join("preview_v2_tx.txt"),
         format!("{tx_hash} {block_hash} {block_number} {slot_number}\n"),
     )?;
-    println!("wrote {} (preview_v2_proof.bin, root.hex, tx.txt)", dir.display());
+    println!(
+        "wrote {} (preview_v2_proof.bin, root.hex, tx.txt)",
+        dir.display()
+    );
     Ok(())
 }

@@ -27,7 +27,7 @@ impl MKTreeNode {
 
 /// `Blake2s256(left ‖ right)` — upstream `impl Add for &MKTreeNode`.
 #[inline]
-pub fn merge_nodes(left: &MKTreeNode, right: &MKTreeNode) -> MKTreeNode {
+pub(crate) fn merge_nodes(left: &MKTreeNode, right: &MKTreeNode) -> MKTreeNode {
     let mut h = Blake2s256::new();
     h.update(&left.bytes);
     h.update(&right.bytes);
@@ -37,7 +37,7 @@ pub fn merge_nodes(left: &MKTreeNode, right: &MKTreeNode) -> MKTreeNode {
 /// ckb-mmr `Merge` = Blake2s256, identical to upstream `MergeMKTreeNode`.
 /// `merge_peaks` is left as the crate default to match upstream (which does
 /// not override it), preserving the peak-bagging order in `calculate_root`.
-pub struct MergeMKTreeNode;
+pub(crate) struct MergeMKTreeNode;
 
 impl Merge for MergeMKTreeNode {
     type Item = MKTreeNode;
