@@ -12,9 +12,15 @@
 mod hashes;
 #[cfg(feature = "tx-components")]
 mod locate;
+#[cfg(feature = "tx-components")]
+mod script_data;
 mod txid;
 
 pub use hashes::{ScriptLanguage, datum_hash, script_hash};
 #[cfg(feature = "tx-components")]
 pub use locate::{TxComponent, TxParseError, locate_tx_components};
+#[cfg(all(feature = "tx-components", feature = "host"))]
+pub use script_data::cost_models_to_wire;
+#[cfg(feature = "tx-components")]
+pub use script_data::verify_script_data;
 pub use txid::cardano_tx_id;

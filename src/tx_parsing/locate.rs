@@ -1,4 +1,4 @@
-//! Byte-exact CBOR component location (§5), via pallas Conway `MintedTx` +
+//! Byte-exact CBOR component location (§5), via pallas Conway `Tx` +
 //! `KeepRaw` so each `component_bytes` is the ORIGINAL sub-slice of `tx_bytes`
 //! (Plutus CBOR is non-canonical — the consumer re-hashes these exact bytes,
 //! never a re-encoding). Scope is `T`-local (body + witness set); no ledger
@@ -12,7 +12,7 @@
 //! follow in the same module.
 
 use pallas_codec::minicbor;
-use pallas_primitives::conway::MintedTx;
+use pallas_primitives::conway::Tx;
 
 use super::hashes::{ScriptLanguage, script_hash};
 
@@ -21,6 +21,10 @@ use super::hashes::{ScriptLanguage, script_hash};
 pub enum TxParseError {
     /// The transaction CBOR did not decode as a Conway transaction.
     Decode,
+    /// The cost-model wire was malformed.
+    CostModelWire,
+    /// Recomputed `script_data_hash` did not match the transaction body's.
+    ScriptDataMismatch,
 }
 
 // §5 type tags: 0x01 redeemer, 0x02 inline datum, 0x03 output datum-hash,
@@ -39,7 +43,7 @@ pub struct TxComponent {
 /// Locate the in-scope components of a Cardano transaction. Returns `Err` on a
 /// malformed transaction, never panics.
 pub fn locate_tx_components(tx_bytes: &[u8]) -> Result<Vec<TxComponent>, TxParseError> {
-    let tx: MintedTx = minicbor::decode(tx_bytes).map_err(|_| TxParseError::Decode)?;
+    let tx: Tx = minicbor::decode(tx_bytes).map_err(|_| TxParseError::Decode)?;
     let mut out = Vec::new();
     extract_scripts(&tx, &mut out);
     Ok(out)
@@ -60,7 +64,7 @@ fn push_script(out: &mut Vec<TxComponent>, lang: ScriptLanguage, script_bytes: &
     });
 }
 
-fn extract_scripts(tx: &MintedTx, out: &mut Vec<TxComponent>) {
+fn extract_scripts(tx: &Tx, out: &mut Vec<TxComponent>) {
     let ws = &tx.transaction_witness_set;
     if let Some(v) = &ws.native_script {
         for s in v.iter() {

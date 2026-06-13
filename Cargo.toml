@@ -50,11 +50,12 @@ fixed = "1.28"
 # Merkle Mountain Range proof verify for `tx-inclusion`; no_std (no serde).
 ckb-merkle-mountain-range = { version = "0.6.1", default-features = false, optional = true }
 
-# tx-components (Phase B): Conway tx decode + KeepRaw byte-exact spans + blake2b.
-# `serde` feature = derive only (no serde_json / no JSON in guest). Pinned.
-pallas-primitives = { version = "=0.32.1", default-features = false, features = ["serde"], optional = true }
-pallas-codec = { version = "=0.32.1", default-features = false, optional = true }
-pallas-crypto = { version = "=0.32.1", default-features = false, optional = true }
+# tx-components (Phase B): Conway tx decode + KeepRaw byte-exact spans +
+# `ScriptData::build_for().hash()` for script_data_hash. `serde` feature = derive
+# only (no serde_json / no JSON in guest); no pallas-traverse. Guest-validated.
+pallas-primitives = { version = "=1.0.0", default-features = false, features = ["serde"], optional = true }
+pallas-codec = { version = "=1.0.0", default-features = false, optional = true }
+pallas-crypto = { version = "=1.0.0", default-features = false, optional = true }
 
 crypto-bigint = { version = "0.5.5", features = ["alloc"] }
 crypto-ratio = "0.2.0"
