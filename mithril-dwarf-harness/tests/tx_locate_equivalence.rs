@@ -1,14 +1,15 @@
-//! `locate_tx_components` against a real Plutus tx (Koios `/tx_cbor`).
-//!
-//! `0x05` scripts: located bytes are a byte-exact sub-slice of the tx CBOR and
-//! the locator equals the real on-chain script hash. `0x01` redeemers: emitted
-//! only with cost models, behind the `script_data_hash` binding, byte-exact.
+//! `locate_tx_components` against real txs (Koios `/tx_cbor`). Each component's
+//! bytes are a byte-exact sub-slice of the tx CBOR; hash locators (`0x04`/`0x05`)
+//! equal the real on-chain hash; `0x01`/`0x04` are emitted only behind the
+//! verified `script_data_hash` binding. Covers all five §5 component types.
 
 use mithril_dwarf::tx_parsing::{
     ScriptLanguage, cost_models_to_wire, datum_hash, locate_tx_components, script_hash,
 };
 
 const C_REDEEMER: u8 = 0x01;
+const C_DATUM_INLINE: u8 = 0x02;
+const C_DATUM_HASH: u8 = 0x03;
 const C_WITNESS_DATUM: u8 = 0x04;
 const C_SCRIPT: u8 = 0x05;
 
@@ -124,6 +125,37 @@ fn locate_extracts_real_witness_datum() {
         d.locator,
         "locator != blake2b256(datum)",
     );
+}
+
+#[test]
+fn locate_extracts_real_output_datums() {
+    let tx = hex::decode(include_str!("test_data/tx_scripts/output_datum_tx.hex").trim()).unwrap();
+    // Output datums are body-resident (txid-committed) — no cost models needed.
+    let components = locate_tx_components(&tx, None).expect("locate output-datum tx");
+
+    let inline: Vec<_> = components
+        .iter()
+        .filter(|c| c.component_type == C_DATUM_INLINE)
+        .collect();
+    let dhash: Vec<_> = components
+        .iter()
+        .filter(|c| c.component_type == C_DATUM_HASH)
+        .collect();
+    assert_eq!(inline.len(), 2, "expected 2 inline datums");
+    assert_eq!(dhash.len(), 1, "expected 1 output datum-hash");
+
+    for c in inline.iter().chain(dhash.iter()) {
+        // locator is the u32-le output index.
+        assert_eq!(c.locator.len(), 4, "output-datum locator is a u32 index");
+        // byte-exact: the bytes appear verbatim in the tx.
+        assert!(
+            tx.windows(c.component_bytes.len())
+                .any(|w| w == c.component_bytes),
+            "output datum is not a sub-slice of tx_bytes",
+        );
+    }
+    // a datum-hash component is exactly the 32-byte hash.
+    assert_eq!(dhash[0].component_bytes.len(), 32);
 }
 
 #[test]

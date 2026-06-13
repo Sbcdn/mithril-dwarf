@@ -7,11 +7,12 @@
 //! Component types (§5 table): `0x01` redeemer, `0x02` inline datum,
 //! `0x03` output datum-hash, `0x04` witness datum, `0x05` script.
 //!
-//! WIP: lands incrementally. Currently emits `0x05` scripts and (with cost
-//! models) `0x01` redeemers behind the `script_data_hash` binding; datums
-//! (`0x02`/`0x03`/`0x04`) follow.
+//! `0x02`/`0x03`/`0x05` are body/witness-resident (txid- or hash-authenticated)
+//! and always emitted. `0x01`/`0x04` are bound only via `script_data_hash`, so
+//! they are emitted only when `cost_models` is supplied and that binding verifies.
 
 use pallas_codec::minicbor;
+use pallas_primitives::babbage::{DatumOption, GenTransactionOutput};
 use pallas_primitives::conway::{PlutusData, RedeemerTag, Redeemers, Tx};
 
 use super::hashes::{ScriptLanguage, datum_hash, script_hash};
@@ -28,8 +29,9 @@ pub enum TxParseError {
     ScriptDataMismatch,
 }
 
-// §5 type tags: 0x02 inline datum, 0x03 output datum-hash added as each lands.
 const C_REDEEMER: u8 = 0x01;
+const C_DATUM_INLINE: u8 = 0x02;
+const C_DATUM_HASH: u8 = 0x03;
 const C_WITNESS_DATUM: u8 = 0x04;
 const C_SCRIPT: u8 = 0x05;
 
@@ -55,12 +57,38 @@ pub fn locate_tx_components(
     let tx: Tx = minicbor::decode(tx_bytes).map_err(|_| TxParseError::Decode)?;
     let mut out = Vec::new();
     extract_scripts(&tx, &mut out);
+    extract_output_datums(&tx, &mut out);
     if let Some(cost_models) = cost_models {
         verify_decoded(&tx, cost_models)?;
         extract_redeemers(&tx, &mut out)?;
         extract_witness_datums(&tx, &mut out);
     }
     Ok(out)
+}
+
+/// `0x02` inline datum / `0x03` output datum-hash, keyed by output index. Both
+/// live in the tx body's outputs, so the txid commits them directly — no cost
+/// models / binding needed. The inline datum is the datum's own CBOR (the inner
+/// `KeepRaw`, byte-exact), not the `#6.24(...)` wrapper.
+fn extract_output_datums(tx: &Tx, out: &mut Vec<TxComponent>) {
+    for (index, output) in tx.transaction_body.outputs.iter().enumerate() {
+        let locator = (index as u32).to_le_bytes().to_vec();
+        let datum = match output {
+            GenTransactionOutput::PostAlonzo(o) => match o.datum_option.as_deref() {
+                Some(DatumOption::Hash(h)) => Some((C_DATUM_HASH, h.to_vec())),
+                Some(DatumOption::Data(d)) => Some((C_DATUM_INLINE, d.0.raw_cbor().to_vec())),
+                None => None,
+            },
+            GenTransactionOutput::Legacy(o) => o.datum_hash.map(|h| (C_DATUM_HASH, h.to_vec())),
+        };
+        if let Some((component_type, component_bytes)) = datum {
+            out.push(TxComponent {
+                component_type,
+                locator,
+                component_bytes,
+            });
+        }
+    }
 }
 
 /// `0x04` witness datum: component_bytes = the datum's original CBOR (`KeepRaw`,
