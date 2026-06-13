@@ -30,7 +30,7 @@ async fn get_json(url: &str) -> Result<Value> {
     if !resp.status().is_success() {
         return Err(anyhow!("GET {url}: status {}", resp.status()));
     }
-    Ok(resp.json().await.map_err(|e| anyhow!("decode {url}: {e}"))?)
+    resp.json().await.map_err(|e| anyhow!("decode {url}: {e}"))
 }
 
 #[tokio::main]
