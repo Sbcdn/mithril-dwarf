@@ -44,12 +44,12 @@ pub struct TxComponent {
     pub component_bytes: Vec<u8>,
 }
 
-/// Locate the in-scope components of a Cardano transaction. `0x05` scripts are
-/// always emitted (txid/hash-authenticated). Witness-set components that are
-/// only bound via `script_data_hash` — `0x01` redeemers — are emitted only when
-/// `cost_models` is given: the binding is then verified first (folded in), so a
-/// redeemer can't be emitted unless it is authentic. Returns `Err` on a
-/// malformed transaction or a failed binding, never panics.
+/// Locate the in-scope components of a Cardano transaction. Scripts (`0x05`) and
+/// output datums (`0x02`/`0x03`) are always emitted — the txid/hash commits them.
+/// Witness-set components bound only via `script_data_hash` (`0x01` redeemers,
+/// `0x04` witness datums) are emitted only when `cost_models` is given: the
+/// binding is verified first (folded in), so they can't be emitted unless
+/// authentic. Returns `Err` on a malformed tx or a failed binding, never panics.
 pub fn locate_tx_components(
     tx_bytes: &[u8],
     cost_models: Option<&[u8]>,
