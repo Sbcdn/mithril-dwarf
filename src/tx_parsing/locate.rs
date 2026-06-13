@@ -32,11 +32,11 @@ pub enum TxParseError {
 const C_SCRIPT: u8 = 0x05;
 
 /// A located transaction component: a byte-exact sub-slice of `tx_bytes` plus a
-/// type tag and a type-specific address (see §5).
+/// type tag and a type-specific locator (see §5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxComponent {
     pub component_type: u8,
-    pub address: Vec<u8>,
+    pub locator: Vec<u8>,
     pub component_bytes: Vec<u8>,
 }
 
@@ -49,7 +49,7 @@ pub fn locate_tx_components(tx_bytes: &[u8]) -> Result<Vec<TxComponent>, TxParse
     Ok(out)
 }
 
-/// `0x05` script: `component_bytes = language_tag ‖ script_bytes`, so the address
+/// `0x05` script: `component_bytes = language_tag ‖ script_bytes`, so the locator
 /// is `blake2b224(component_bytes)` by construction (self-certifying). Native
 /// scripts are hashed over their CBOR; Plutus over their raw bytes — pallas hands
 /// the right form for each (`KeepRaw` vs raw).
@@ -59,7 +59,7 @@ fn push_script(out: &mut Vec<TxComponent>, lang: ScriptLanguage, script_bytes: &
     component_bytes.extend_from_slice(script_bytes);
     out.push(TxComponent {
         component_type: C_SCRIPT,
-        address: script_hash(lang, script_bytes).to_vec(),
+        locator: script_hash(lang, script_bytes).to_vec(),
         component_bytes,
     });
 }

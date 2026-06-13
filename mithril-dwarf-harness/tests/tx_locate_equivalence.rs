@@ -1,7 +1,7 @@
 //! `locate_tx_components` against a real Plutus tx (Koios `/tx_cbor`).
 //!
 //! Currently covers `0x05` scripts: the located script bytes must be a byte-exact
-//! sub-slice of the tx CBOR, and its address must equal the real on-chain script
+//! sub-slice of the tx CBOR, and its locator must equal the real on-chain script
 //! hash. (Datums / redeemers / script_data_hash binding land in later commits.)
 
 use mithril_dwarf::tx_parsing::{ScriptLanguage, locate_tx_components, script_hash};
@@ -35,16 +35,16 @@ fn locate_extracts_real_witness_script() {
         "script bytes are not a sub-slice of tx_bytes",
     );
 
-    // Address is the real on-chain script hash, and is self-certifying.
+    // Locator is the real on-chain script hash, and is self-certifying.
     assert_eq!(
-        hex::encode(&s.address),
+        hex::encode(&s.locator),
         onchain,
-        "address != on-chain script hash"
+        "locator != on-chain script hash"
     );
     assert_eq!(
         script_hash(ScriptLanguage::PlutusV1, script_bytes).to_vec(),
-        s.address,
-        "address != blake2b224(language ‖ script_bytes)",
+        s.locator,
+        "locator != blake2b224(language ‖ script_bytes)",
     );
 }
 
