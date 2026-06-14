@@ -1,10 +1,10 @@
-//! Byte-exact CBOR component location (§5), via pallas Conway `Tx` +
+//! Byte-exact CBOR component location, via pallas Conway `Tx` +
 //! `KeepRaw` so each `component_bytes` is the ORIGINAL sub-slice of `tx_bytes`
 //! (Plutus CBOR is non-canonical — the consumer re-hashes these exact bytes,
 //! never a re-encoding). Scope is `T`-local (body + witness set); no ledger
 //! recursion, no UTxO lookup, no redeemer->script resolution.
 //!
-//! Component types (§5 table): `0x01` redeemer, `0x02` inline datum,
+//! Component types: `0x01` redeemer, `0x02` inline datum,
 //! `0x03` output datum-hash, `0x04` witness datum, `0x05` script.
 //!
 //! `0x02`/`0x03`/`0x05` are body/witness-resident (txid- or hash-authenticated)
@@ -41,7 +41,7 @@ const C_WITNESS_DATUM: u8 = 0x04;
 const C_SCRIPT: u8 = 0x05;
 
 /// A located transaction component: a byte-exact sub-slice of `tx_bytes` plus a
-/// type tag and a type-specific locator (see §5).
+/// type tag and a type-specific locator (see the component table above).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxComponent {
     pub component_type: u8,
@@ -213,7 +213,7 @@ fn bound_script_hashes(tx: &Tx) -> BTreeSet<[u8; 28]> {
 /// preimage, so an unbound script could be substituted. SPENDING scripts (whose
 /// hash lives in the spent UTxO's credential) are NOT bound T-locally and are
 /// therefore skipped here; proving them needs the input UTxOs (a separate proof,
-/// out of `oaks_tx` scope).
+/// out of scope for this `T`-local locator).
 fn push_bound_script(
     out: &mut Vec<TxComponent>,
     bound: &BTreeSet<[u8; 28]>,

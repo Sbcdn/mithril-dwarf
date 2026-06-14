@@ -2,7 +2,7 @@
 //! bytes are a byte-exact sub-slice of the tx CBOR; hash locators (`0x04`/`0x05`)
 //! equal the real on-chain hash; the tx is bound to its proven txid, and
 //! `0x01`/`0x04` sit behind the verified `script_data_hash` binding. Covers all
-//! five §5 component types.
+//! five component types.
 
 use mithril_dwarf::tx_parsing::{
     ScriptLanguage, TxParseError, cost_models_to_wire, datum_hash, locate_tx_components,

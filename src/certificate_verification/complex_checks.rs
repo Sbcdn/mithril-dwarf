@@ -1174,7 +1174,7 @@ mod upstream_differential {
 
     /// Random fuzz vs upstream BigInt. Random 512-bit `ev` is essentially
     /// never in the ~2^-52 boundary sliver, so dwarf and upstream must
-    /// agree everywhere here — a non-zero count would mean a gross `x`/`q`
+    /// agree everywhere here — a non-zero count would mean a blatant `x`/`q`
     /// construction bug, not a boundary effect. Also asserts cache==old.
     #[test]
     #[ignore = "heavy differential fuzz vs upstream re-port; run: cargo test --release -- --ignored"]

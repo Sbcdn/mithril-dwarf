@@ -8,6 +8,7 @@ A cycle-optimized, allocation-free Cardano Mithril certificate verifier in Rust.
 - Custom zero-copy wire format: `CertificateZeroCopy<'a>` holds slice references into the source `&[u8]`.
 - Tiered cheapest-first: invalid chains fail in `O(1)` comparisons before any cryptography runs.
 - Bit-equivalent to upstream Mithril at pinned rev `7e787de` — verified per check and at the top level for every corpus cert and every mutation, plus a differential lottery fuzz against an arbitrary-precision re-port of upstream's eligibility check.
+- Optional, off-by-default `tx-inclusion` / `tx-parsing` / `tx-components` features add Cardano transaction Merkle-inclusion proofs and byte-exact CBOR component extraction for downstream guests.
 
 ## Background
 
@@ -88,12 +89,27 @@ fn verify(chain_bytes: &[&[u8]], genesis_vk: &[u8; 32])
 
 With the `host` feature enabled, `certificate_to_bytes` and `minimal_converter` turn an upstream `Certificate` into the bytes the guest expects.
 
+## Transaction inclusion & parsing
+
+Three optional, off-by-default features let a downstream guest prove a Cardano transaction is included under a certified Mithril `CardanoTransactionsMerkleRoot` and extract its components — byte-equivalent to upstream Mithril and the Cardano ledger. They share none of the certificate path and add nothing to the default guest image.
+
+- **`tx-inclusion`** — decode an `MKMapProof` (custom serde-free wire), `verify` / `contains` / `compute_root`, and the binding-folded entrypoints `verify_tx_inclusion_v1`/`_v2(proof, leaves, expected_root)`. The `compute_root() == expected_root` check is folded in so a guest cannot ship without binding to the certified feed.
+- **`tx-parsing`** — `cardano_tx_id` (blake2b-256 over the original body CBOR) plus `script_hash` / `datum_hash`; the txid hasher pulls in no CBOR machinery.
+- **`tx-components`** — `locate_tx_components` (byte-exact redeemer/datum/script sub-slices) and `verify_script_data`, via a `no_std` pallas Conway decode.
+
+The `host` feature additionally exposes the proof and cost-model transcoders (`tx_proof_to_wire_v1`/`_v2`, `cost_models_to_wire`) and re-exports the Mithril fetch types, so a host needs no direct Mithril dependency.
+
+The bindings are folded so the guest cannot skip them: inclusion proves the txid leaf is under the certified root, `cardano_tx_id` re-derives that txid from the body, and `verify_script_data` ties the witness-set redeemers and datums to the body's `script_data_hash`. Each step returns `Err` on mismatch — never a silent pass.
+
 ## Feature flags
 
 | Feature   | Pulls in | When to enable |
 |-----------|----------|----------------|
 | *(default)* | `blake2`, `blst`, `sha2`, `ed25519-dalek`, `risc0-zkvm`, `crypto-ratio`, `fixed` | Guest verifier; this is what you compile into the RISC0 ELF. |
-| `host`    | `mithril-client`, `mithril-common`, `mithril-stm`, `anyhow` | Host glue: aggregator fetch, wire serialization, converter. |
+| `tx-inclusion` | `ckb-merkle-mountain-range` | Cardano tx set-proof `verify`/`contains`/`compute_root` + `verify_tx_inclusion_v1`/`_v2` (guest). |
+| `tx-parsing` | `blake2` (already present) | `cardano_tx_id`, `script_hash`, `datum_hash` (guest). |
+| `tx-components` | `pallas-primitives`, `pallas-codec`, `pallas-crypto` | `locate_tx_components`, `verify_script_data` — Conway CBOR decode (guest). |
+| `host`    | `mithril-client`, `mithril-common`, `mithril-stm`, `anyhow` | Host glue: aggregator fetch, wire serialization, converter, and the tx proof/cost-model transcoders. |
 
 The `host` feature tracks Mithril at a frozen rev on `Sbcdn/mithril.git` carrying `num-integer-backend` and crypto-version pins needed for clean RISC0 builds.
 

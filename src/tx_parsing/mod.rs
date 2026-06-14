@@ -1,4 +1,4 @@
-//! Cardano transaction parsing for the `oaks_tx` guest.
+//! Cardano transaction parsing for downstream zkVM guests.
 //!
 //! - [`cardano_tx_id`] — txid = `blake2b256` of the host-sliced body CBOR. The
 //!   id is what the inclusion proof's leaf binds, so a wrong host slice yields a

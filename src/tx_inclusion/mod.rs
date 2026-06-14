@@ -1,4 +1,4 @@
-//! Cardano-transaction Merkle-inclusion proofs for the `oaks_tx` guest.
+//! Cardano-transaction Merkle-inclusion proofs for downstream zkVM guests.
 //!
 //! Guest-side, serde-free, bit-equivalent to upstream iog/main
 //! `MKMapProof<BlockRange>` (`mithril-common/src/crypto_helper/merkle_map.rs`).
@@ -36,7 +36,7 @@ fn verify_and_bind(proof: &[u8], expected_root: &[u8; 32]) -> Result<MKMapProof,
 /// Verify **v1** (`CardanoTransactions`) inclusion: every `tx_id` must be a leaf
 /// of the proof, the proof must verify, and its root must equal the certified
 /// `expected_root`. Returns `Err` (never panics) on any malformed input or
-/// failed check; the caller (`oaks_tx`) owns aborting the proof.
+/// failed check; the caller owns aborting the proof.
 pub fn verify_tx_inclusion_v1(
     proof: &[u8],
     tx_ids: &[[u8; 32]],

@@ -1,6 +1,6 @@
 //! Host-side proof transcoder: upstream Mithril proof bytes -> dwarf's custom
 //! guest wire. The tx-inclusion analog of `parser::certificate_to_bytes`, so a
-//! host (e.g. oaks_tx) depends only on mithril-dwarf: it fetches via the
+//! host depends only on mithril-dwarf: it fetches via the
 //! re-exported `Client`, transcodes here, and the guest only ever sees the
 //! custom wire. The serde mirror decodes the upstream proof's exact shape (its
 //! `MKProof` fields are private upstream) and never enters the guest graph.

@@ -162,7 +162,7 @@ pub fn verify_certificate_chain(
 /// Aligned with upstream `ProtocolGenesisVerificationKey::verify` —
 /// `verify_strict` adds small-order checks on R / A and uses the
 /// un-cofactored equation. Genesis-only path; +~49,800 RISC0 cycles
-/// per chain (measured in `oaks_cert` with `--features guest-bench`).
+/// per chain (measured in the downstream guest harness with `--features guest-bench`).
 fn verify_ed25519_signature(
     message: &[u8],
     signature: &[u8],

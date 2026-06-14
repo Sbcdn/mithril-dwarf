@@ -4,7 +4,7 @@
 //! body field; since the txid commits the body, it's the only thing binding the
 //! witness-set redeemers/datums to the proven transaction. We recompute it with
 //! pallas's own [`ScriptData::build_for`]/`hash` — the authoritative encoding,
-//! including the finicky `language_views` layout (PlutusV1 key `0x4100`, costs
+//! including the intricate `language_views` layout (PlutusV1 key `0x4100`, costs
 //! as an indefinite array wrapped in a bytestring, V1 ordered last) — so it's
 //! upstream-exact by construction, not a re-port.
 //!
