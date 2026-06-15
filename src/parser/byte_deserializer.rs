@@ -362,7 +362,12 @@ fn read_multi_signature_fast<'a>(
         let sigma_bytes = parser.read_fixed_48()?;
 
         let idx_count = parser.read_u32()?;
-        let indexes_bytes = parser.read_n_bytes(idx_count as usize * 8)?;
+        // `* 8` can overflow `usize` on the 32-bit guest for an adversarial
+        // count; reject cleanly instead of wrapping.
+        let needed = (idx_count as usize)
+            .checked_mul(8)
+            .ok_or(ParseError::OutOfBounds)?;
+        let indexes_bytes = parser.read_n_bytes(needed)?;
 
         let signer_index = parser.read_u64()?;
         let vk_bytes = parser.read_fixed_96()?;
