@@ -1459,6 +1459,7 @@ fn corpus_diversity_report() {
         "CardanoImmutableFilesFull",
         "CardanoTransactions",
         "CardanoDatabase",
+        "CardanoBlocksTransactions",
     ];
     let missing_variants: Vec<&str> = expected_variants
         .iter()
@@ -1492,6 +1493,45 @@ fn corpus_diversity_report() {
         "Corpus diversity: variants under per-variant floor of \
          {per_variant_floor}: {under_floor:?}. The variant axis is \
          not robustly exercised — re-run fetch_diverse_corpus.sh."
+    );
+
+    // Structural-diversity floor: the corpus must contain at least one cert
+    // where a single signer wins more than 255 winning lottery indexes. That
+    // is the few-signer / large-quorum shape (e.g. testing-preview v2 certs)
+    // that exposed the silent u8 -> u32 winning-index-count truncation. The
+    // SignedEntityType axis is semantic; this is the structural axis the bug
+    // lived in, and the whole corpus was blind to it. Computed through dwarf's
+    // own serialize -> parse round trip so a width regression fails right here
+    // rather than going silently unexercised again.
+    use mithril_dwarf::parser::byte_deserializer::{SignatureBasicZeroCopy, certificate_from_bytes};
+    let mut max_indexes_per_signer: u32 = 0;
+    for cert in &standard {
+        let Ok(typed) = TryInto::<mithril_common::entities::Certificate>::try_into((**cert).clone())
+        else {
+            continue;
+        };
+        let bytes = mithril_dwarf::certificate_to_bytes(&typed);
+        let Ok(parsed) = certificate_from_bytes(&bytes) else {
+            continue;
+        };
+        if let SignatureBasicZeroCopy::Multi { signature, .. } = parsed.signature {
+            for sig in &signature.signatures {
+                max_indexes_per_signer = max_indexes_per_signer.max(sig.indexes_count);
+            }
+        }
+        if max_indexes_per_signer > 255 {
+            break;
+        }
+    }
+    eprintln!("Max winning-indexes per signer: {max_indexes_per_signer}");
+    assert!(
+        max_indexes_per_signer > 255,
+        "Corpus diversity: max winning-indexes-per-signer is \
+         {max_indexes_per_signer} (<= 255). The wide index-count wire path \
+         (the u8 -> u32 fix) is exercised by no corpus cert. Re-run \
+         fetch_diverse_corpus.sh — it pulls testing-preview \
+         CardanoBlocksTransactions certs whose few-signer / large-quorum \
+         shape has signers winning well over 255 indexes."
     );
 
     // Multi-network coverage. Gap 3 plumbing (genesis_vk_for_cert)
