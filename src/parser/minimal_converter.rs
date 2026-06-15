@@ -8,8 +8,8 @@ use crate::parser::{
 use anyhow::anyhow;
 use chrono::{DateTime, Utc};
 use mithril_client::common::{
-    BlockNumber, CardanoDbBeacon, Epoch, ProtocolMessage, ProtocolMessagePartKey,
-    ProtocolParameters, SignedEntityType,
+    BlockNumber, BlockNumberOffset, CardanoDbBeacon, Epoch, ProtocolMessage,
+    ProtocolMessagePartKey, ProtocolParameters, SignedEntityType,
 };
 use mithril_common::{
     crypto_helper::{
@@ -223,11 +223,11 @@ fn reconstruct_signature_fast(
 }
 
 /// Rebuild the upstream `SignedEntityType` from the discriminant and
-/// the fixed `[u64; 2]` slots produced by `read_entity_type_data_fast`.
+/// the fixed `[u64; 3]` slots produced by `read_entity_type_data_fast`.
 #[inline]
 fn reconstruct_signed_entity_type(
     discriminant: u8,
-    data: [u64; 2],
+    data: [u64; 3],
 ) -> Result<SignedEntityType, anyhow::Error> {
     match discriminant {
         0 => Ok(SignedEntityType::MithrilStakeDistribution(Epoch(data[0]))),
@@ -245,6 +245,11 @@ fn reconstruct_signed_entity_type(
         4 => Ok(SignedEntityType::CardanoTransactions(
             Epoch(data[0]),
             BlockNumber(data[1]),
+        )),
+        5 => Ok(SignedEntityType::CardanoBlocksTransactions(
+            Epoch(data[0]),
+            BlockNumber(data[1]),
+            BlockNumberOffset(data[2]),
         )),
         _ => Err(anyhow!("entity type discriminant: {discriminant}")),
     }

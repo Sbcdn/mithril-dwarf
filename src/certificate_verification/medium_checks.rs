@@ -584,10 +584,13 @@ pub fn hash_signature<H: HashSink>(
 }
 
 /// Mithril's `feed_hash` over a `SignedEntityType`. Discriminants 0/1
-/// emit `data[0]` only; 2/3/4 emit both fields. The parser rejects any
-/// other discriminant, so the `_` arm is unreachable.
+/// emit `data[0]` only; 2/3/4 emit both fields. Discriminant 5
+/// (`CardanoBlocksTransactions`) is the sole variant upstream prefixes
+/// with its `index()` (a `u16`, value 5, big-endian) before the three
+/// fields. The parser rejects any other discriminant, so the `_` arm is
+/// unreachable.
 #[inline]
-pub fn feed_entity_type_hash<H: HashSink>(hasher: &mut H, discriminant: u8, data: &[u64; 2]) {
+pub fn feed_entity_type_hash<H: HashSink>(hasher: &mut H, discriminant: u8, data: &[u64; 3]) {
     match discriminant {
         0 | 1 => {
             hasher.update(&data[0].to_be_bytes());
@@ -595,6 +598,12 @@ pub fn feed_entity_type_hash<H: HashSink>(hasher: &mut H, discriminant: u8, data
         2..=4 => {
             hasher.update(&data[0].to_be_bytes());
             hasher.update(&data[1].to_be_bytes());
+        }
+        5 => {
+            hasher.update(&5u16.to_be_bytes());
+            hasher.update(&data[0].to_be_bytes());
+            hasher.update(&data[1].to_be_bytes());
+            hasher.update(&data[2].to_be_bytes());
         }
         _ => debug_assert!(false, "parser rejects unknown discriminant"),
     }

@@ -16,6 +16,7 @@
 #   * CardanoDatabase
 #   * CardanoImmutableFilesFull
 #   * CardanoStakeDistribution
+#   * CardanoBlocksTransactions (v2 — only on the testing-preview aggregator)
 #
 # After running, verify with:
 #   cargo test -p mithril-dwarf-harness --test equivalence --release \
@@ -133,12 +134,39 @@ if [ -n "${H_CSD:-}" ]; then
     done
 fi
 
+# CardanoBlocksTransactions (v2): only the testing-preview aggregator signs
+# this variant. Fetch 2 distinct v2 certs, each with its predecessor, so both
+# form Standard corpus entries (the diversity floor is 2). These certs also
+# exercise the few-signer/large-quorum path where a single signer wins >255
+# lottery indexes — the case that exposed the u32 winning-index-count fix.
+# The live preview chain advances and prunes, so hashes are discovered live.
+echo
+echo "[5/6] CardanoBlocksTransactions (testing-preview, 2 chains)"
+TP_AGG="https://aggregator.testing-preview.api.mithril.network/aggregator"
+H_CBT=$(curl -s --max-time 30 "$TP_AGG/certificates" \
+    | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+hs = [c['hash'] for c in d
+      if isinstance(c.get('signed_entity_type'), dict)
+      and 'CardanoBlocksTransactions' in c['signed_entity_type']]
+print(' '.join(hs[:2]))
+")
+if [ -n "${H_CBT:-}" ]; then
+    for H in $H_CBT; do
+        $FETCH --network testing-preview --certificate-hash "$H" --max-certificates 2 2>&1 \
+            | grep -E "Saved|Error" | head -2
+    done
+else
+    echo "  <no CardanoBlocksTransactions certs currently served — skipping>"
+fi
+
 # Network diversity: add a short preprod chain so the harness exercises
 # the per-network genesis VK plumbing. Preprod and preview share the
 # same genesis VK (PREPROD_GENESIS_VK_HEX in corpus.rs); the harness
 # auto-selects the right key via `genesis_vk_for_cert(cert)`.
 echo
-echo "[5/5] Preprod chain (100 certs — walks back to genesis)"
+echo "[6/6] Preprod chain (100 certs — walks back to genesis)"
 PREPROD_AGG="https://aggregator.release-preprod.api.mithril.network/aggregator"
 H_PREPROD=$(curl -s --max-time 30 "$PREPROD_AGG/certificates" \
     | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['hash'] if d else '')")

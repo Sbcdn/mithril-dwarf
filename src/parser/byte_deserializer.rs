@@ -250,10 +250,11 @@ pub enum SignatureBasicZeroCopy<'a> {
     },
     Multi {
         entity_type_discriminant: u8,
-        /// At most two `u64`s per upstream `SignedEntityType`. The
-        /// discriminant identifies which slots are valid; the unused
-        /// slot stays 0 and is never read.
-        entity_type_data: [u64; 2],
+        /// At most three `u64`s per upstream `SignedEntityType`
+        /// (`CardanoBlocksTransactions` carries epoch, block number, and
+        /// offset). The discriminant identifies which slots are valid;
+        /// unused slots stay 0 and are never read.
+        entity_type_data: [u64; 3],
         signature: MultiSigParsed<'a>,
     },
 }
@@ -412,18 +413,25 @@ fn read_signature_fast<'a>(
 }
 
 /// Decode the inner `u64` fields of a `SignedEntityType` into a fixed
-/// `[u64; 2]`. Single-field variants leave slot 1 as `0`.
+/// `[u64; 3]`. Variants with fewer fields leave the trailing slots `0`.
 #[inline]
 fn read_entity_type_data_fast(
     parser: &mut FastByteParser,
     discriminant: u8,
-) -> Result<[u64; 2], ParseError> {
+) -> Result<[u64; 3], ParseError> {
     match discriminant {
-        0 | 1 => Ok([parser.read_u64()?, 0]),
+        0 | 1 => Ok([parser.read_u64()?, 0, 0]),
         2..=4 => {
             let a = parser.read_u64()?;
             let b = parser.read_u64()?;
-            Ok([a, b])
+            Ok([a, b, 0])
+        }
+        // CardanoBlocksTransactions: epoch, block number, offset.
+        5 => {
+            let a = parser.read_u64()?;
+            let b = parser.read_u64()?;
+            let c = parser.read_u64()?;
+            Ok([a, b, c])
         }
         _ => Err(ParseError::InvalidFormat),
     }
@@ -431,16 +439,16 @@ fn read_entity_type_data_fast(
 
 #[cfg(test)]
 mod entity_type_discriminant_tests {
-    //! Pin: parser admits discriminants 0..=4 and rejects everything
-    //! else. Tracks upstream Mithril's `SignedEntityType` arity (5
+    //! Pin: parser admits discriminants 0..=5 and rejects everything
+    //! else. Tracks upstream Mithril's `SignedEntityType` arity (6
     //! variants); a new variant or a removed one trips this test.
     use super::{FastByteParser, ParseError, read_entity_type_data_fast};
 
-    const SCRATCH: [u8; 16] = [0u8; 16];
+    const SCRATCH: [u8; 24] = [0u8; 24];
 
     #[test]
-    fn rejects_discriminants_above_4() {
-        for d in 5u8..=255 {
+    fn rejects_discriminants_above_5() {
+        for d in 6u8..=255 {
             let mut parser = FastByteParser::new(&SCRATCH);
             let result = read_entity_type_data_fast(&mut parser, d);
             assert!(
@@ -451,8 +459,8 @@ mod entity_type_discriminant_tests {
     }
 
     #[test]
-    fn accepts_discriminants_0_through_4() {
-        for d in 0u8..=4 {
+    fn accepts_discriminants_0_through_5() {
+        for d in 0u8..=5 {
             let mut parser = FastByteParser::new(&SCRATCH);
             let result = read_entity_type_data_fast(&mut parser, d);
             assert!(result.is_ok(), "discriminant {d}: {result:?}");

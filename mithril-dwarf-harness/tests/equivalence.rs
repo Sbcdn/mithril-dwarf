@@ -1566,17 +1566,15 @@ fn corpus_diversity_report() {
 #[test]
 fn signed_entity_type_discriminant_pinned() {
     use mithril_common::entities::{
-        BlockNumber, CardanoDbBeacon, Epoch, ImmutableFileNumber, SignedEntityType,
+        BlockNumber, BlockNumberOffset, CardanoDbBeacon, Epoch, ImmutableFileNumber,
+        SignedEntityType,
     };
 
     // Pinned (variant, expected_discriminant) per upstream
     // declaration order. Synthetic field values chosen to be
-    // unmistakable in the hashed bytes.
-    // 2617.0 adds CardanoBlocksTransactions at declaration position 5
-    // (a three-field variant). dwarf's wire format does not yet support
-    // it (the host serializer panics), so the harness omits it from the
-    // round-trip cases below; the discriminant value is still pinned via
-    // the explicit assertion further down.
+    // unmistakable in the hashed bytes. CardanoBlocksTransactions
+    // (2617.0, declaration position 5, three fields) is carried through
+    // the full serialize -> parse round trip alongside the rest.
     let cases: &[(SignedEntityType, u8, &str)] = &[
         (
             SignedEntityType::MithrilStakeDistribution(Epoch(100)),
@@ -1608,6 +1606,15 @@ fn signed_entity_type_discriminant_pinned() {
             SignedEntityType::CardanoTransactions(Epoch(104), BlockNumber(900_000)),
             4,
             "CardanoTransactions",
+        ),
+        (
+            SignedEntityType::CardanoBlocksTransactions(
+                Epoch(105),
+                BlockNumber(900_001),
+                BlockNumberOffset(100),
+            ),
+            5,
+            "CardanoBlocksTransactions",
         ),
     ];
 
@@ -1686,7 +1693,8 @@ fn signed_entity_type_discriminant_pinned() {
 #[test]
 fn signed_entity_type_feed_hash_bytes_pinned() {
     use mithril_common::entities::{
-        BlockNumber, CardanoDbBeacon, Epoch, ImmutableFileNumber, SignedEntityType,
+        BlockNumber, BlockNumberOffset, CardanoDbBeacon, Epoch, ImmutableFileNumber,
+        SignedEntityType,
     };
     use sha2::{Digest, Sha256};
 
@@ -1695,6 +1703,11 @@ fn signed_entity_type_feed_hash_bytes_pinned() {
     // `pub(crate)` so we re-implement it here using upstream's
     // documented per-variant byte sequence (signed_entity_type.rs:137).
     let upstream_feed = |variant: &SignedEntityType, hasher: &mut Sha256| {
+        // Upstream prefixes only CardanoBlocksTransactions with its
+        // index() (a u16, big-endian). Uses the real upstream index().
+        if matches!(variant, SignedEntityType::CardanoBlocksTransactions(..)) {
+            hasher.update(&variant.index().to_be_bytes());
+        }
         match variant {
             SignedEntityType::MithrilStakeDistribution(epoch)
             | SignedEntityType::CardanoStakeDistribution(epoch) => {
@@ -1709,26 +1722,26 @@ fn signed_entity_type_feed_hash_bytes_pinned() {
                 hasher.update(&epoch.to_be_bytes());
                 hasher.update(&block_number.to_be_bytes());
             }
-            SignedEntityType::CardanoBlocksTransactions(_, _, _) => {
-                panic!(
-                    "test does not yet exercise CardanoBlocksTransactions (added in Mithril 2617.0)"
-                );
+            SignedEntityType::CardanoBlocksTransactions(epoch, block_number, offset) => {
+                hasher.update(&epoch.to_be_bytes());
+                hasher.update(&block_number.to_be_bytes());
+                hasher.update(&offset.to_be_bytes());
             }
         }
     };
 
     // Cases — same as discriminant pin.
-    let cases: &[(SignedEntityType, u8, [u64; 2], &str)] = &[
+    let cases: &[(SignedEntityType, u8, [u64; 3], &str)] = &[
         (
             SignedEntityType::MithrilStakeDistribution(Epoch(100)),
             0,
-            [100, 0],
+            [100, 0, 0],
             "MithrilStakeDistribution",
         ),
         (
             SignedEntityType::CardanoStakeDistribution(Epoch(101)),
             1,
-            [101, 0],
+            [101, 0, 0],
             "CardanoStakeDistribution",
         ),
         (
@@ -1737,7 +1750,7 @@ fn signed_entity_type_feed_hash_bytes_pinned() {
                 immutable_file_number: 8000 as ImmutableFileNumber,
             }),
             2,
-            [102, 8000],
+            [102, 8000, 0],
             "CardanoImmutableFilesFull",
         ),
         (
@@ -1746,14 +1759,24 @@ fn signed_entity_type_feed_hash_bytes_pinned() {
                 immutable_file_number: 8100 as ImmutableFileNumber,
             }),
             3,
-            [103, 8100],
+            [103, 8100, 0],
             "CardanoDatabase",
         ),
         (
             SignedEntityType::CardanoTransactions(Epoch(104), BlockNumber(900_000)),
             4,
-            [104, 900_000],
+            [104, 900_000, 0],
             "CardanoTransactions",
+        ),
+        (
+            SignedEntityType::CardanoBlocksTransactions(
+                Epoch(105),
+                BlockNumber(900_001),
+                BlockNumberOffset(100),
+            ),
+            5,
+            [105, 900_001, 100],
+            "CardanoBlocksTransactions",
         ),
     ];
 

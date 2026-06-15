@@ -41,6 +41,7 @@ struct Args {
 #[derive(Debug, Clone)]
 pub enum Network {
     Preview,
+    TestingPreview,
     Preprod,
     Mainnet,
 }
@@ -49,10 +50,11 @@ impl Network {
     pub fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
             "preview" => Ok(Self::Preview),
+            "testing-preview" => Ok(Self::TestingPreview),
             "preprod" => Ok(Self::Preprod),
             "mainnet" => Ok(Self::Mainnet),
             _ => Err(anyhow!(
-                "Unknown network: {}. Use: mainnet, preprod, or preview",
+                "Unknown network: {}. Use: mainnet, preprod, preview, or testing-preview",
                 s
             )),
         }
@@ -60,7 +62,9 @@ impl Network {
 
     pub fn get_genesis_key(&self) -> &str {
         match self {
-            Self::Preview | Self::Preprod => {
+            // testing-preview reuses the preview-network genesis key; it is
+            // only needed to construct the client, not to fetch a cert by hash.
+            Self::Preview | Self::TestingPreview | Self::Preprod => {
                 "5b3132372c37332c3132342c3136312c362c3133372c3133312c3231332c3230372c3131372c3139382c38352c3137362c3139392c3136322c3234312c36382c3132332c3131392c3134352c31332c3233322c3234332c34392c3232392c322c3234392c3230352c3230352c33392c3233352c34345d"
             }
             Self::Mainnet => {
@@ -73,6 +77,9 @@ impl Network {
         match self {
             Self::Preview => {
                 "https://aggregator.pre-release-preview.api.mithril.network/aggregator"
+            }
+            Self::TestingPreview => {
+                "https://aggregator.testing-preview.api.mithril.network/aggregator"
             }
             Self::Preprod => "https://aggregator.release-preprod.api.mithril.network/aggregator",
             Self::Mainnet => "https://aggregator.release-mainnet.api.mithril.network/aggregator",

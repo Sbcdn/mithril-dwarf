@@ -715,10 +715,19 @@ fn bump_entity_type_field(t: &mut SignedEntityType, delta: i64, which: EntityFie
                 *b = shift_u64(*b);
             }
         },
-        // Added in upstream Mithril 2617.0. dwarf's wire format does not
-        // yet carry this variant; mutations against it are not exercised.
-        (SignedEntityType::CardanoBlocksTransactions(_, _, _), _) => {
-            panic!("mithril-dwarf does not yet support CardanoBlocksTransactions");
+        // First/Second perturb epoch/block_number; the offset is left
+        // intact (its encoding is pinned positively by the feed_hash byte
+        // test and the corpus bitwise audit).
+        (SignedEntityType::CardanoBlocksTransactions(Epoch(e), block, _offset), which) => {
+            match which {
+                EntityField::First => {
+                    *e = shift_u64(*e);
+                }
+                EntityField::Second => {
+                    let BlockNumber(b) = block;
+                    *b = shift_u64(*b);
+                }
+            }
         }
     }
 }

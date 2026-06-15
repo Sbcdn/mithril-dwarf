@@ -254,11 +254,11 @@ fn write_signed_entity_type(writer: &mut ByteWriter, entity_type: &SignedEntityT
             writer.write_u64(epoch.0);
             writer.write_u64(block_number.0);
         }
-        SignedEntityType::CardanoBlocksTransactions(_, _, _) => {
-            // Added in upstream Mithril 2617.0. dwarf's wire format does
-            // not yet carry this variant; treat as a hard parse failure
-            // until the wire format and verifier are extended.
-            panic!("mithril-dwarf does not yet support CardanoBlocksTransactions");
+        SignedEntityType::CardanoBlocksTransactions(epoch, block_number, offset) => {
+            writer.write_u8(5);
+            writer.write_u64(epoch.0);
+            writer.write_u64(block_number.0);
+            writer.write_u64(offset.0);
         }
     }
 }
