@@ -176,7 +176,7 @@ fn write_multi_signature_optimal(writer: &mut ByteWriter, multi_sig: &ProtocolMu
         writer.write_blst_sig(concat_sig.sigma());
 
         let indexes = concat_sig.indexes();
-        writer.write_u8(indexes.len() as u8);
+        writer.write_u32(indexes.len() as u32);
         for &idx in indexes {
             writer.write_u64(idx);
         }

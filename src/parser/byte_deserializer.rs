@@ -193,7 +193,9 @@ pub struct SignatureParsed<'a> {
     pub sigma_bytes: &'a [u8; 48],
     /// `indexes_count` little-endian `u64`s, decoded on demand.
     pub indexes_bytes: &'a [u8],
-    pub indexes_count: u8,
+    /// A single signer can win thousands of lottery indexes (few-signer,
+    /// large-quorum certs), so this is `u32`, not `u8`.
+    pub indexes_count: u32,
     pub signer_index: u64,
     /// BLS G2 point, borrowed.
     pub vk_bytes: &'a [u8; 96],
@@ -358,7 +360,7 @@ fn read_multi_signature_fast<'a>(
     for _ in 0..sig_count {
         let sigma_bytes = parser.read_fixed_48()?;
 
-        let idx_count = parser.read_u8()?;
+        let idx_count = parser.read_u32()?;
         let indexes_bytes = parser.read_n_bytes(idx_count as usize * 8)?;
 
         let signer_index = parser.read_u64()?;
