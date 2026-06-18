@@ -1,0 +1,55 @@
+name: Guest verifier tests
+
+# Runs the guest verifier's own unit tests (`cargo test -p mithril-dwarf`,
+# default = guest feature set) plus clippy. These exercise the lottery /
+# Taylor arithmetic, the parser, and committed wire-format fixtures
+# (testdata/) with synthetic and fixture data — no fetched corpus required —
+# so unlike the corpus-dependent equivalence harness they run in CI.
+#
+# Why this exists: the corpus-dependent harness gate cannot run here, so a
+# change that broke a committed dwarf-wire fixture (the u8 -> u32 winning-index
+# count) slipped through unnoticed. This job catches that class.
+#
+# Heavy `#[ignore]`d differential fuzz (cargo test -- --ignored) is NOT run
+# here — it is minutes-long and run on demand.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guest-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guest-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-guest-cargo-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-guest-cargo-
+
+      - name: Clippy (guest / default features)
+        run: cargo clippy --release -- -D warnings
+
+      - name: Unit tests (guest verifier — lottery, parser, fixtures)
+        run: cargo test -p mithril-dwarf --release
