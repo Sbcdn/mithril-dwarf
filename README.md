@@ -161,7 +161,7 @@ The lottery is security-critical and the positive corpus cannot exercise its dec
 
 ### Intentional divergences
 
-The places where dwarf's observable behaviour or precision differs from upstream — BLS identity rejected at pairing time rather than at deserialise, asymmetric epoch-chaining, check ordering, usize-vs-u64 BLS scalar index width, bytewise NextAvk chain compare, and three numeric lottery approximations (`from_float`, `ev_max`, U512 Taylor overflow) — are documented and pin-tested in [`tests/intentional_divergences.rs`](mithril-dwarf-harness/tests/intentional_divergences.rs). Each is verdict-equivalent (or strictly safer) on real chains; a corpus-wide gate catches any future change that breaks that equivalence.
+The places where dwarf's observable behaviour or precision differs from upstream — BLS identity rejected at pairing time rather than at deserialise, asymmetric epoch-chaining, check ordering, usize-vs-u64 BLS scalar index width, bytewise NextAvk chain compare, and three numeric lottery approximations (`from_float`, `ev_max`, and the U2048 wide-fallback ceiling) — are documented and pin-tested in [`tests/intentional_divergences.rs`](mithril-dwarf-harness/tests/intentional_divergences.rs). Each is verdict-equivalent (or strictly safer) on real chains; a corpus-wide gate catches any future change that breaks that equivalence.
 
 ### Upstream drift CI
 

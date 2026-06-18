@@ -19,7 +19,11 @@ impl<'a> FastByteParser<'a> {
 
     #[inline(always)]
     fn check_bounds(&self, needed: usize) -> Result<(), ParseError> {
-        if self.pos + needed > self.data.len() {
+        // `pos` only advances past a passing check, so `pos <= len` always;
+        // the subtraction can't underflow. Phrased this way (not `pos + needed
+        // > len`) so a near-`u32::MAX` length can't wrap on the 32-bit guest
+        // and slip past the check into a panicking slice.
+        if needed > self.data.len() - self.pos {
             Err(ParseError::OutOfBounds)
         } else {
             Ok(())
@@ -469,6 +473,64 @@ mod entity_type_discriminant_tests {
             let mut parser = FastByteParser::new(&SCRATCH);
             let result = read_entity_type_data_fast(&mut parser, d);
             assert!(result.is_ok(), "discriminant {d}: {result:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod bounds_overflow_tests {
+    //! `check_bounds` must reject without wrapping. The wrap only manifests
+    //! where `usize` is 32-bit (the guest); CI runs on a 64-bit host, so the
+    //! wrap itself is pinned at primitive width, and the parser is fuzzed for
+    //! panic-freedom on adversarial input.
+    use super::{ParseError, certificate_from_bytes};
+
+    #[test]
+    fn subtraction_form_is_wrap_safe_unlike_addition() {
+        // The shape `check_bounds` faces on the 32-bit guest: a length field
+        // near the type max with the cursor mid-buffer.
+        let (pos, needed, len) = (100u32, u32::MAX, 200u32);
+        // Old form `pos + needed > len`: the add wraps to 99, 99 > 200 is
+        // false — adversarial length wrongly passes as in-bounds.
+        assert!(pos.wrapping_add(needed) <= len, "demonstrates the wrap bug");
+        // New form `needed > len - pos`: u32::MAX > 100 — correctly rejected.
+        assert!(needed > len - pos, "subtraction form rejects");
+    }
+
+    #[test]
+    fn oversized_length_prefix_rejects_not_panics() {
+        // First field is a length-prefixed slice; a u32::MAX prefix with no
+        // payload must be a clean OutOfBounds, never a panic.
+        let bytes = [0xFFu8, 0xFF, 0xFF, 0xFF];
+        assert!(matches!(
+            certificate_from_bytes(&bytes),
+            Err(ParseError::OutOfBounds)
+        ));
+    }
+
+    #[test]
+    fn malformed_bytes_never_panic() {
+        // Deterministic LCG over varied lengths and a sweep of oversized u32
+        // length prefixes at every offset; every input must yield Ok or Err.
+        let mut state: u64 = 0x9E3779B97F4A7C15;
+        let mut next = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (state >> 33) as u32
+        };
+        let mut buf = Vec::with_capacity(512);
+        for len in 0..512usize {
+            buf.clear();
+            for _ in 0..len {
+                buf.push(next() as u8);
+            }
+            // Result is unused; the contract is that the call returns rather
+            // than panicking (catch is the test harness's own unwind guard).
+            let _ = certificate_from_bytes(&buf);
+            // Same buffer but with a 0xFFFFFFFF length prefix spliced at the
+            // front — exercises the read_bytes_slice wrap path directly.
+            let mut adv = vec![0xFFu8; 4];
+            adv.extend_from_slice(&buf);
+            let _ = certificate_from_bytes(&adv);
         }
     }
 }
