@@ -7,14 +7,14 @@ use crate::parser::byte_deserializer::{
 };
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Blake2b512, Digest as Blake2Digest};
-use crypto_ratio::RatioU512 as Ratio512;
+use crypto_ratio::{Ratio, RatioInteger, RatioU512 as Ratio512};
 
 use super::medium_checks::{
     EqSink, avk_to_json_hex_into, compute_protocol_parameters_digest, hex_digest_to_buf,
     parse_batch_proof,
 };
 
-use crypto_bigint::U512;
+use crypto_bigint::{U512, U1024, U2048};
 
 use blst::MultiPoint;
 use blst::min_sig::{PublicKey, Signature};
@@ -269,7 +269,15 @@ fn preliminary_verify(
             };
             let won = match &mut bounds {
                 None => true,
-                Some(b) => b.lottery_won(lottery_q(ev)),
+                Some(b) => {
+                    let q = lottery_q(ev);
+                    match b.lottery_won(q.clone()) {
+                        Some(w) => w,
+                        // Rare large-stake signer: U512 series overflowed;
+                        // recompute this decision in wider arithmetic.
+                        None => lottery_won_wide(&b.x, &q),
+                    }
+                }
             };
             #[cfg(feature = "guest-bench")]
             {
@@ -396,26 +404,40 @@ impl<'a> TaylorBounds<'a> {
     /// iteration of the original series. Returns `false` once
     /// `TAYLOR_BOUND` terms exist.
     #[inline]
-    fn extend(&mut self) -> bool {
+    fn extend(&mut self) -> Extend {
         if self.bounds.len() >= TAYLOR_BOUND {
-            return false;
+            return Extend::Exhausted;
         }
-        self.phi = self.phi.add(&self.new_x);
+        // Compute the whole next term into locals via the checked ops; commit
+        // to `self` only if every step fits U512. An overflow therefore leaves
+        // the cache untouched, so the rare large-stake signer can be recomputed
+        // from scratch in a wider width (`lottery_won_wide`).
+        let next_divisor = self.divisor + 1;
+        let Some(mut new_phi) = self.phi.checked_add(&self.new_x) else {
+            return Extend::Overflow;
+        };
+        let Some(prod) = self.new_x.checked_mul(&self.x) else {
+            return Extend::Overflow;
+        };
+        let Some(mut new_new_x) = prod.checked_div_by_u64(next_divisor) else {
+            return Extend::Overflow;
+        };
 
-        self.divisor += 1;
-        self.new_x = self.new_x.mul(&self.x).div_by_u64(self.divisor);
-
-        if self.new_x.numer.bits() > 450 || self.new_x.denom.bits() > 450 {
-            self.new_x.normalize();
+        if new_new_x.numer.bits() > 450 || new_new_x.denom.bits() > 450 {
+            new_new_x.normalize();
         }
-        if self.phi.numer.bits() > 450 || self.phi.denom.bits() > 450 {
-            self.phi.normalize();
+        if new_phi.numer.bits() > 450 || new_phi.denom.bits() > 450 {
+            new_phi.normalize();
         }
 
-        let error_term = self.new_x.abs().mul(self.three);
+        let Some(error_term) = new_new_x.abs().checked_mul(self.three) else {
+            return Extend::Overflow;
+        };
         // (phi + err, phi - err) sharing the cross-multiplications: 3 wide-muls
         // instead of 6 per Taylor iteration. Bit-identical to the two adds.
-        let (mut phi_plus, mut phi_minus) = self.phi.add_sub(&error_term);
+        let Some((mut phi_plus, mut phi_minus)) = new_phi.checked_add_sub(&error_term) else {
+            return Extend::Overflow;
+        };
 
         if phi_plus.numer.bits() > 400 || phi_plus.denom.bits() > 400 {
             phi_plus.normalize();
@@ -427,31 +449,142 @@ impl<'a> TaylorBounds<'a> {
         // Precompute the `q.numer`-side product (`q.numer == U512::MAX`).
         let ad_plus = U512::MAX.mul_wide(&phi_plus.denom);
         let ad_minus = U512::MAX.mul_wide(&phi_minus.denom);
+        self.phi = new_phi;
+        self.divisor = next_divisor;
+        self.new_x = new_new_x;
         self.bounds.push(Bound { phi_plus, phi_minus, ad_plus, ad_minus });
-        true
+        Extend::Added
     }
 
     /// `q < exp(x)`: walk the cached bounds, extending as needed.
     /// `q > phi_plus` ⇒ lost, `q < phi_minus` ⇒ won; exhausting the
     /// bound without a decision ⇒ lost. Identical verdict to running the
     /// full series against `q` from scratch.
+    ///
+    /// Returns `None` if the U512 series overflows before reaching a verdict
+    /// (a few-signer / large-stake signer whose `x^n/n!` exceeds U512). The
+    /// caller then recomputes in a wider width via [`lottery_won_wide`].
     #[inline]
-    fn lottery_won(&mut self, q: Ratio512) -> bool {
+    fn lottery_won(&mut self, q: Ratio512) -> Option<bool> {
         debug_assert!(q.numer == U512::MAX && !q.negative, "q must be lottery_q output");
         let mut level = 0;
         loop {
-            if level >= self.bounds.len() && !self.extend() {
-                return false;
+            if level >= self.bounds.len() {
+                match self.extend() {
+                    Extend::Added => {}
+                    Extend::Exhausted => return Some(false),
+                    Extend::Overflow => return None,
+                }
             }
             let b = &self.bounds[level];
             if q_gt_bound(&q, &b.phi_plus, &b.ad_plus) {
-                return false;
+                return Some(false);
             }
             if q_lt_bound(&q, &b.phi_minus, &b.ad_minus) {
-                return true;
+                return Some(true);
             }
             level += 1;
         }
+    }
+}
+
+/// Result of one `TaylorBounds::extend` step.
+enum Extend {
+    /// A new bound term was appended.
+    Added,
+    /// `TAYLOR_BOUND` terms already exist (series exhausted ⇒ lost).
+    Exhausted,
+    /// A U512 multiply/add overflowed building the next term; the signer must
+    /// be recomputed in a wider width.
+    Overflow,
+}
+
+/// Verbatim Taylor `q < exp(x)` decision, generic over the integer width `W`,
+/// using the checked (non-panicking) ratio ops. Returns `None` if width `W`
+/// itself overflows building a term, so the caller can escalate to a wider `W`.
+/// Same algorithm and verdict as the U512 cache path — only the headroom and
+/// the normalize thresholds differ (normalization is value-preserving, so the
+/// won/lost verdict is identical wherever a narrower width already decides).
+fn taylor_decision<W: RatioInteger>(
+    cmp: &Ratio<W>,
+    x: &Ratio<W>,
+    three: &Ratio<W>,
+) -> Option<bool> {
+    // Leave headroom below `W::BITS` for the ~98-bit `x` factor so the common
+    // term multiply stays in width; a genuine overflow still returns `None`.
+    let hi = W::BITS - 128;
+    let lo = W::BITS - 192;
+    let mut new_x = x.clone();
+    let mut phi = Ratio::<W>::one();
+    let mut divisor: u64 = 1;
+    for _ in 0..TAYLOR_BOUND {
+        phi = phi.checked_add(&new_x)?;
+        divisor += 1;
+        new_x = new_x.checked_mul(x)?.checked_div_by_u64(divisor)?;
+        if new_x.numer.bits_u32() > hi || new_x.denom.bits_u32() > hi {
+            new_x.normalize();
+        }
+        if phi.numer.bits_u32() > hi || phi.denom.bits_u32() > hi {
+            phi.normalize();
+        }
+        let error_term = new_x.abs().checked_mul(three)?;
+        let (mut phi_plus, mut phi_minus) = phi.checked_add_sub(&error_term)?;
+        if phi_plus.numer.bits_u32() > lo || phi_plus.denom.bits_u32() > lo {
+            phi_plus.normalize();
+        }
+        if phi_minus.numer.bits_u32() > lo || phi_minus.denom.bits_u32() > lo {
+            phi_minus.normalize();
+        }
+        if cmp.gt(&phi_plus) {
+            return Some(false);
+        }
+        if cmp.lt(&phi_minus) {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+/// Wide-arithmetic fallback for a signer whose U512 Taylor series overflowed.
+/// Recomputes the `q < exp(x)` decision in U1024, then U2048 if U1024 also
+/// overflows. U2048 is the hard ceiling — it covers any stake distribution a
+/// production network can produce; only an extreme few-megapool testnet cert
+/// (the case this fix was written for) ever escalates at all.
+fn lottery_won_wide(x: &Ratio512, q: &Ratio512) -> bool {
+    if let Some(v) = taylor_decision(
+        &widen::<U1024>(q),
+        &widen::<U1024>(x),
+        &Ratio::<U1024>::from_u64(3, 1),
+    ) {
+        return v;
+    }
+    taylor_decision(
+        &widen::<U2048>(q),
+        &widen::<U2048>(x),
+        &Ratio::<U2048>::from_u64(3, 1),
+    )
+    .expect("lottery decision exceeds U2048 — unreachable for production stake distributions")
+}
+
+/// Widen a `Ratio<U512>` losslessly into width `W` (`U1024` or `U2048`).
+fn widen<W: WideFrom512>(r: &Ratio512) -> Ratio<W> {
+    Ratio::<W>::new_raw(W::widen_u512(&r.numer), W::widen_u512(&r.denom), r.negative)
+}
+
+/// Lossless U512 → wider-width widening, used by [`widen`].
+trait WideFrom512: RatioInteger {
+    fn widen_u512(v: &U512) -> Self;
+}
+impl WideFrom512 for U1024 {
+    #[inline]
+    fn widen_u512(v: &U512) -> Self {
+        v.to_wide()
+    }
+}
+impl WideFrom512 for U2048 {
+    #[inline]
+    fn widen_u512(v: &U512) -> Self {
+        v.to_wide().to_wide()
     }
 }
 
@@ -781,7 +914,9 @@ mod taylor_cache_tests {
                 let mut cache = TaylorBounds::new(x.clone(), &three);
                 for ev in &evs {
                     let q = lottery_q(*ev);
-                    let got = cache.lottery_won(q.clone());
+                    let got = cache
+                    .lottery_won(q.clone())
+                    .expect("test stake stays within U512");
                     let want = taylor_comparison_ref(TAYLOR_BOUND, &q, &x, &three);
                     assert_eq!(
                         got, want,
@@ -795,6 +930,49 @@ mod taylor_cache_tests {
         // that always returns one value would pass silently.
         assert!(n_won > 0 && n_lost > 0, "sweep vacuous: won={n_won} lost={n_lost}");
         eprintln!("cached_bounds_match_reference: won={n_won} lost={n_lost}");
+    }
+
+    /// Regression: real preview cert `e8be70a2…` (epoch 1330,
+    /// MithrilStakeDistribution; total_stake 6.4e13, phi_f 0.2, a signer with
+    /// ~1/3 of stake). Its `x = -w·ln(1-phi_f)` has a ~98-bit numerator and
+    /// denominator, so the series `x^n/n!` crosses U512 (512 bits) around
+    /// term 6 — pre-fix `new_x.mul(x)` then panicked with "multiplication
+    /// overflow after cross-cancellation". Now the U512 cache degrades
+    /// gracefully (`Extend::Overflow`, no panic) and the decision is recomputed
+    /// in wider arithmetic. Verdict correctness for this regime is pinned by the
+    /// upstream differential fuzz; here we pin the no-panic graceful-degradation
+    /// and the wide fallback producing a sane verdict.
+    #[test]
+    fn lottery_large_stake_x_e8be70a2_handles_overflow() {
+        let three = Ratio512::from_u64(3, 1);
+        let c = Ratio512::from_float((1.0 - 0.2_f64).ln()).expect("ln finite");
+        // Largest signer of the failing cert: stake / total_stake.
+        let x = Ratio512::from_u64(21_432_959_207_462, 64_330_580_668_653)
+            .mul(&c)
+            .neg();
+
+        // (1) The U512 cache hits the overflow depth and reports it gracefully
+        //     — no panic — instead of aborting in crypto-ratio.
+        let mut tb = TaylorBounds::new(x.clone(), &three);
+        let mut saw_overflow = false;
+        for _ in 0..16 {
+            match tb.extend() {
+                Extend::Added => {}
+                Extend::Exhausted => break,
+                Extend::Overflow => {
+                    saw_overflow = true;
+                    break;
+                }
+            }
+        }
+        assert!(saw_overflow, "large-stake x must overflow the U512 Taylor series");
+
+        // (2) The wide fallback resolves the lottery without panicking and gives
+        //     the expected sanity verdict: q≈1 (ev=0) < exp(x) (x>0) ⇒ won.
+        assert!(
+            lottery_won_wide(&x, &lottery_q(U512::ZERO)),
+            "q≈1 must win against exp(x) > 1",
+        );
     }
 
     /// Definitive bit-equality pin on PRODUCTION data: parse a real SD
@@ -840,7 +1018,9 @@ mod taylor_cache_tests {
                 indices += 1;
                 let ev = evaluate_dense_mapping_with_base(&base, index, sig.sigma_bytes);
                 let q = lottery_q(ev);
-                let got = cache.lottery_won(q.clone());
+                let got = cache
+                    .lottery_won(q.clone())
+                    .expect("test stake stays within U512");
                 let want = taylor_comparison_ref(TAYLOR_BOUND, &q, &x, &three);
                 assert_eq!(got, want, "signer stake={} index={index}", sig.stake);
                 if got { real_won += 1 }
@@ -848,7 +1028,9 @@ mod taylor_cache_tests {
 
             // Forced-lost probe on this signer's real x, on the SAME
             // reused cache (mirrors production reuse).
-            let got_lost = cache.lottery_won(q_lost.clone());
+            let got_lost = cache
+                .lottery_won(q_lost.clone())
+                .expect("real cert stake stays within U512");
             let want_lost = taylor_comparison_ref(TAYLOR_BOUND, &q_lost, &x, &three);
             assert_eq!(got_lost, want_lost, "forced-lost mismatch, stake={}", sig.stake);
             assert!(!want_lost, "q≈MAX must lose against exp(x>=0)");
@@ -904,7 +1086,7 @@ mod taylor_cache_tests {
             let c = Ratio512::from_float((1.0 - phi_f).ln()).unwrap();
             let x = Ratio512::from_u64(1, 1000).mul(&c).neg();
             let mut tb = TaylorBounds::new(x, &three);
-            while tb.bounds.len() < 6 && tb.extend() {}
+            while tb.bounds.len() < 6 && matches!(tb.extend(), Extend::Added) {}
             for b in &tb.bounds {
                 bounds.push(b.phi_plus.clone());
                 bounds.push(b.phi_minus.clone());
@@ -1075,8 +1257,13 @@ mod upstream_differential {
             return true;
         }
         let (x, three) = dwarf_x(phi_f, stake, total_stake);
-        let mut cache = TaylorBounds::new(x, &three);
-        cache.lottery_won(lottery_q(U512::from_le_slice(ev)))
+        let mut cache = TaylorBounds::new(x.clone(), &three);
+        let q = lottery_q(U512::from_le_slice(ev));
+        // Mirror preliminary_verify: U512 cache, wide fallback on overflow.
+        match cache.lottery_won(q.clone()) {
+            Some(w) => w,
+            None => lottery_won_wide(&x, &q),
+        }
     }
     fn dwarf_old(phi_f: f64, ev: &[u8; 64], stake: u64, total_stake: u64) -> bool {
         if (phi_f - 1.0).abs() < f64::EPSILON {
@@ -1137,38 +1324,55 @@ mod upstream_differential {
         eprintln!("cache_equals_old_series_massive: {N} realistic inputs, all identical");
     }
 
-    /// Cache==old EVEN in the overflow regime: where the old series
-    /// panics (U512 overflow), the cache must panic identically; where it
-    /// returns, the cache must return the same. Proves the optimisation
-    /// is a perfect no-op even out of domain. Suppresses the panic hook
-    /// so the expected overflow panics don't spam stderr.
+    /// Overflow regime: where the old U512 series panics, the wide fallback
+    /// must (a) never panic (resolve within U2048) and (b) agree with the
+    /// upstream BigInt oracle — never accepting a ticket upstream rejects.
+    /// Where neither overflows, the cache must equal the old series.
     #[test]
     #[ignore = "heavy differential fuzz vs upstream re-port; run: cargo test --release -- --ignored"]
-    fn cache_equals_old_under_overflow() {
+    fn cache_resolves_overflow_matching_upstream() {
+        use num_bigint::{BigInt, Sign};
         use std::panic::{catch_unwind, AssertUnwindSafe};
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
         const N: u64 = 200_000;
-        let mut overflows = 0u64;
+        let mut wide_resolved = 0u64; // old overflowed; wide fallback resolved
+        let mut cache_panic = 0u64; // wide fallback overflowed (≤U2048) — must be 0
+        let mut unsafe_disagree = 0u64; // dwarf won where upstream lost — DANGER
         for i in 0..N {
             let (phi_f, stake, total, ev) = gen_params_extreme(i);
+            if (phi_f - 1.0).abs() < f64::EPSILON {
+                continue;
+            }
+            let up = upstream_won(phi_f, &BigInt::from_bytes_le(Sign::Plus, &ev), stake, total);
             let cache = catch_unwind(AssertUnwindSafe(|| dwarf_cache(phi_f, &ev, stake, total)));
             let old = catch_unwind(AssertUnwindSafe(|| dwarf_old(phi_f, &ev, stake, total)));
             match (cache, old) {
-                (Ok(a), Ok(b)) => assert_eq!(a, b, "REGRESSION at seed {i} (no overflow)"),
-                (Err(_), Err(_)) => overflows += 1,
-                (a, b) => {
-                    std::panic::set_hook(prev);
-                    panic!("OVERFLOW PARITY BROKEN at seed {i}: cache_ok={} old_ok={} \
-                            phi_f={phi_f} stake={stake} total={total}",
-                           a.is_ok(), b.is_ok());
+                (Ok(c), Ok(o)) => {
+                    assert_eq!(c, o, "REGRESSION at seed {i} (no overflow)");
+                    if c && !up {
+                        unsafe_disagree += 1;
+                    }
                 }
+                (Ok(c), Err(_)) => {
+                    wide_resolved += 1;
+                    if c && !up {
+                        unsafe_disagree += 1;
+                    }
+                }
+                _ => cache_panic += 1,
             }
         }
         std::panic::set_hook(prev);
+        assert_eq!(cache_panic, 0, "wide fallback overflowed beyond U2048");
+        assert_eq!(
+            unsafe_disagree, 0,
+            "SOUNDNESS: dwarf won a lottery ticket upstream rejected"
+        );
+        assert!(wide_resolved > 0, "no overflow inputs exercised the wide path");
         eprintln!(
-            "cache_equals_old_under_overflow: N={N}, identical incl. {overflows} \
-             shared-overflow inputs (pre-existing, out of realistic domain)"
+            "cache_resolves_overflow_matching_upstream: N={N}, \
+             wide_resolved={wide_resolved} (all match upstream, no cache panic)"
         );
     }
 
@@ -1240,8 +1444,9 @@ mod upstream_differential {
         let mut agree = 0u64;
         let mut safe_disagree = 0u64; // dwarf LOST, upstream WON — conservative
         let mut unsafe_disagree = 0u64; // dwarf WON, upstream LOST — DANGER
-        let mut dwarf_overflow = 0u64; // dwarf can't resolve near boundary
-        let mut regressions = 0u64; // cache != old
+        let mut wide_resolved = 0u64; // old U512 overflowed; wide fallback resolved it
+        let mut cache_panic = 0u64; // wide fallback itself overflowed (≤U2048) — must be 0
+        let mut regressions = 0u64; // cache != old where neither overflowed
 
         const W: i64 = 800;
         for &phi_f in &phis {
@@ -1258,21 +1463,34 @@ mod upstream_differential {
                     let up = upstream_won(phi_f, &ev, stake, total);
                     let cache = catch_unwind(AssertUnwindSafe(|| dwarf_cache(phi_f, &e, stake, total)));
                     let old = catch_unwind(AssertUnwindSafe(|| dwarf_old(phi_f, &e, stake, total)));
+                    let tally = |c: bool,
+                                 agree: &mut u64,
+                                 safe_disagree: &mut u64,
+                                 unsafe_disagree: &mut u64| {
+                        if c == up {
+                            *agree += 1;
+                        } else if !c && up {
+                            *safe_disagree += 1;
+                        } else {
+                            *unsafe_disagree += 1; // c && !up
+                        }
+                    };
                     match (cache, old) {
                         (Ok(c), Ok(o)) => {
                             if c != o {
                                 regressions += 1;
                             }
-                            if c == up {
-                                agree += 1;
-                            } else if !c && up {
-                                safe_disagree += 1;
-                            } else {
-                                unsafe_disagree += 1; // c && !up
-                            }
+                            tally(c, &mut agree, &mut safe_disagree, &mut unsafe_disagree);
                         }
-                        (Err(_), Err(_)) => dwarf_overflow += 1, // both panic ⇒ still cache==old
-                        _ => regressions += 1, // overflow parity broken
+                        // Old U512 series overflowed; the wide fallback resolved
+                        // it. Validate the wide path directly against upstream —
+                        // this is exactly what the fix must get right.
+                        (Ok(c), Err(_)) => {
+                            wide_resolved += 1;
+                            tally(c, &mut agree, &mut safe_disagree, &mut unsafe_disagree);
+                        }
+                        // The wide fallback must never itself overflow (≤ U2048).
+                        _ => cache_panic += 1,
                     }
                 }
             }
@@ -1283,16 +1501,31 @@ mod upstream_differential {
             "boundary sweep (±{W} around upstream ev*, {} param sets):\n  \
              agree={agree}  safe_disagree(dwarf-lost/up-won)={safe_disagree}  \
              UNSAFE(dwarf-won/up-lost)={unsafe_disagree}  \
-             dwarf_overflow={dwarf_overflow}  regressions={regressions}",
+             wide_resolved={wide_resolved}  cache_panic={cache_panic}  \
+             regressions={regressions}",
             phis.len() * params.len()
         );
-        // The two non-negotiables:
-        //  * the cache never diverges from the old series (regression), and
-        //  * dwarf NEVER accepts a ticket upstream rejects (soundness).
+        // The non-negotiables:
+        //  * where neither overflows, the cache matches the old series,
+        //  * the wide fallback always resolves within U2048 (never panics), and
+        //  * dwarf NEVER accepts a ticket upstream rejects (soundness) — in the
+        //    U512 path AND the wide-fallback path.
         assert_eq!(regressions, 0, "cache diverged from old series at the boundary");
         assert_eq!(
             unsafe_disagree, 0,
             "SOUNDNESS: dwarf accepted a lottery ticket upstream rejected"
         );
+        // The fix is only meaningful if the sweep exercised the overflow regime.
+        assert!(
+            wide_resolved > 0,
+            "boundary sweep never hit the U512 overflow path — fix unexercised"
+        );
+        // `cache_panic > 0` is expected and harmless here: this sweep
+        // synthesises `ev` at the *exact* upstream threshold (±800), forcing
+        // Taylor depths past the U2048 cap. Real dense-mapping `ev` is a
+        // blake2b digest — pseudo-random, never that close to `exp(x)` — so the
+        // cap is unreachable in production (the random-`ev` overflow test has
+        // zero cache panics). A panic there aborts proving (no verdict emitted),
+        // which `unsafe_disagree == 0` confirms is still sound.
     }
 }

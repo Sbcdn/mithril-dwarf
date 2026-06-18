@@ -20,9 +20,10 @@
 //! | 6 | NextAvk chain compare: bytewise vs structural           | check     | On real chains      |
 //! | 7 | Lottery `x` via crypto-ratio `from_float` (~2^-52)      | lottery   | Safe-direction only |
 //! | 8 | Lottery `q` uses `2^512-1` for `ev_max` (not `2^512`)   | lottery   | Safe-direction only |
-//! | 9 | U512 Taylor overflow → panic on extreme lottery inputs  | lottery   | Liveness-only       |
 //!
-//! Divergences #7–#9 are pinned by the differential-fuzz suite in
+//! (#9 — U512 Taylor overflow — is now RESOLVED; see the closed list.)
+//!
+//! Divergences #7–#8 are pinned by the differential-fuzz suite in
 //! `mithril_dwarf::certificate_verification::complex_checks::
 //! upstream_differential` (dwarf-side, where the private lottery
 //! internals and crypto-ratio / num-rational references are reachable),
@@ -36,6 +37,16 @@
 //! - #2 — Ed25519 non-strict verify. Aligned with upstream by switching
 //!   to `verify_strict` at the genesis-cert call site; measured cost
 //!   ~74k host cycles per chain (one call per chain, genesis-only).
+//! - #9 — U512 Taylor overflow → panic. RESOLVED by an adaptive wide
+//!   fallback: when the U512 series overflows building a bound, that
+//!   signer's decision is recomputed in U1024, then U2048. Was reachable
+//!   on a real preview large-stake cert (`e8be70a2…`, epoch 1330: three
+//!   megapools, ~1/3 of stake each — only possible on a few-pool testnet).
+//!   The wide verdict matches the upstream BigInt oracle (never a false
+//!   accept); pinned by `upstream_differential::{cache_resolves_overflow_
+//!   matching_upstream, quantify_boundary_gap_vs_upstream}`. U2048 is the
+//!   cap — only a synthetic `ev` placed at the exact decision boundary
+//!   exceeds it, which a real hash-derived `ev` never does.
 //!
 //! Divergence #7 — Lottery `x` via crypto-ratio `from_float`
 //!
@@ -62,21 +73,23 @@
 //! LESS likely to win (the safe direction). Dominated by #7; same
 //! measure-zero boundary effect, same safe direction.
 //!
-//! Divergence #9 — U512 Taylor overflow → panic (liveness, not soundness)
+//! Divergence #9 (RESOLVED) — U512 Taylor overflow
 //!
-//! dwarf evaluates `exp(x)` with a bounded-width U512 Taylor series,
-//! reducing (`normalize`) only when a limb exceeds a bit threshold.
-//! Upstream uses arbitrary-precision `BigInt` and never overflows. For
-//! extreme inputs — high `phi_f` together with a single signer near
-//! `w = stake/total ≈ 1`, or an `ev` driven to the exact decision
-//! boundary (forcing deep iteration before a reduction) — dwarf's `mul`
-//! overflows and panics. In the zkVM a panic aborts proof generation for
-//! that cert: a liveness / DoS consideration, NOT a soundness hole (no
-//! invalid cert is ever accepted). The inputs are outside the realistic
-//! Mithril parameter domain (`phi_f ≈ 0.2`, stake distributed across many
-//! signers) and are never hit by real certs; the
-//! `cache_equals_old_under_overflow` pin shows the optimisation preserves
-//! this behaviour exactly (same panics on the same inputs).
+//! dwarf evaluates `exp(x)` with a bounded-width Taylor series. For a
+//! few-signer / large-stake cert a signer's `w = stake/total` is large, so
+//! `x = -w·ln(1-phi_f)` has a ~98-bit numerator and denominator and `x^n/n!`
+//! crosses U512 around term 6 — where the old code panicked in crypto-ratio.
+//! This was originally filed as a liveness-only divergence assumed
+//! unreachable by real certs; that assumption was wrong — a real preview
+//! cert (`e8be70a2…`, epoch 1330) hit it. It is now fixed: the U512 series
+//! degrades gracefully (`Extend::Overflow`, no panic) and the signer's
+//! decision is recomputed in U1024, then U2048, via the checked
+//! (non-panicking) crypto-ratio ops. The wide verdict matches the upstream
+//! BigInt oracle on every input (`cache_resolves_overflow_matching_upstream`,
+//! `quantify_boundary_gap_vs_upstream`: `unsafe_disagree == 0`). U2048 is the
+//! hard cap; only a synthetic `ev` at the exact decision boundary exceeds it
+//! (a panic = aborted proof = no verdict = still sound), which a real
+//! hash-derived `ev` never produces.
 
 use mithril_dwarf::certificate_verification::VerifyError;
 use mithril_dwarf_harness::{
