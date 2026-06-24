@@ -146,8 +146,10 @@ pub fn verify_bls_multisig(cert: &CertificateZeroCopy) -> Result<(), VerifyError
         None
     } else {
         Some(
-            Ratio512::from_float((1.0 - phi_f).ln())
-                .expect("phi_f in (0,1); ln finite"),
+            // Exact dyadic of the f64 `ln(1-phi_f)`, matching upstream's
+            // `num_rational::Ratio::from_float` bit-for-bit (no 2^-52 grid).
+            Ratio512::from_float_exact((1.0 - phi_f).ln())
+                .expect("phi_f in (0,1); ln finite and in range"),
         )
     };
     let three = Ratio512::from_u64(3, 1);
@@ -908,7 +910,7 @@ mod taylor_cache_tests {
         let mut n_won = 0usize;
         let mut n_lost = 0usize;
         for &phi_f in &phis {
-            let c = Ratio512::from_float((1.0 - phi_f).ln()).expect("ln finite");
+            let c = Ratio512::from_float_exact((1.0 - phi_f).ln()).expect("ln finite");
             for &(stake, total) in &stakes {
                 let x = Ratio512::from_u64(stake, total).mul(&c).neg();
                 let mut cache = TaylorBounds::new(x.clone(), &three);
@@ -945,7 +947,7 @@ mod taylor_cache_tests {
     #[test]
     fn lottery_large_stake_x_e8be70a2_handles_overflow() {
         let three = Ratio512::from_u64(3, 1);
-        let c = Ratio512::from_float((1.0 - 0.2_f64).ln()).expect("ln finite");
+        let c = Ratio512::from_float_exact((1.0 - 0.2_f64).ln()).expect("ln finite");
         // Largest signer of the failing cert: stake / total_stake.
         let x = Ratio512::from_u64(21_432_959_207_462, 64_330_580_668_653)
             .mul(&c)
@@ -996,7 +998,7 @@ mod taylor_cache_tests {
         let phi_f = cert.metadata.phi_f;
         let total_stake = cert.aggregate_verification_key.total_stake;
         assert!((phi_f - 1.0).abs() >= f64::EPSILON, "phi_f==1 would skip the lottery");
-        let c = Ratio512::from_float((1.0 - phi_f).ln()).expect("ln finite");
+        let c = Ratio512::from_float_exact((1.0 - phi_f).ln()).expect("ln finite");
         let three = Ratio512::from_u64(3, 1);
 
         let msgp = prepare_message_with_root(cert.signed_message, &cert.aggregate_verification_key)
@@ -1083,7 +1085,7 @@ mod taylor_cache_tests {
         // which is irrelevant to the compare being tested here).
         let three = Ratio512::from_u64(3, 1);
         for &phi_f in &[0.05_f64, 0.2, 0.5] {
-            let c = Ratio512::from_float((1.0 - phi_f).ln()).unwrap();
+            let c = Ratio512::from_float_exact((1.0 - phi_f).ln()).unwrap();
             let x = Ratio512::from_u64(1, 1000).mul(&c).neg();
             let mut tb = TaylorBounds::new(x, &three);
             while tb.bounds.len() < 6 && matches!(tb.extend(), Extend::Added) {}
@@ -1248,7 +1250,7 @@ mod upstream_differential {
     // sharing the exact production `x`/`q` construction.
     fn dwarf_x(phi_f: f64, stake: u64, total_stake: u64) -> (Ratio512, Ratio512) {
         let three = Ratio512::from_u64(3, 1);
-        let c = Ratio512::from_float((1.0 - phi_f).ln()).expect("ln finite");
+        let c = Ratio512::from_float_exact((1.0 - phi_f).ln()).expect("ln finite");
         let x = Ratio512::from_u64(stake, total_stake).mul(&c).neg();
         (x, three)
     }
@@ -1515,17 +1517,25 @@ mod upstream_differential {
             unsafe_disagree, 0,
             "SOUNDNESS: dwarf accepted a lottery ticket upstream rejected"
         );
-        // The fix is only meaningful if the sweep exercised the overflow regime.
+        // The fix is only meaningful if the sweep exercised the overflow
+        // regime — by resolving in U1024/U2048 (`wide_resolved`) or by hitting
+        // the U2048 cap (`cache_panic`). Since `c` became the exact dyadic of
+        // the f64 `ln(1-phi_f)` (matching upstream bit-for-bit), the boundary
+        // denominators are ~3 bits larger, so an `ev` synthesised at the *exact*
+        // upstream threshold (±800) now overruns the cap rather than resolving:
+        // the sweep is essentially all `cache_panic`. Either path counts as
+        // exercising the overflow regime; the load-bearing invariant is
+        // soundness, asserted above (`unsafe_disagree == 0`).
         assert!(
-            wide_resolved > 0,
+            wide_resolved + cache_panic > 0,
             "boundary sweep never hit the U512 overflow path — fix unexercised"
         );
-        // `cache_panic > 0` is expected and harmless here: this sweep
-        // synthesises `ev` at the *exact* upstream threshold (±800), forcing
-        // Taylor depths past the U2048 cap. Real dense-mapping `ev` is a
-        // blake2b digest — pseudo-random, never that close to `exp(x)` — so the
-        // cap is unreachable in production (the random-`ev` overflow test has
-        // zero cache panics). A panic there aborts proving (no verdict emitted),
-        // which `unsafe_disagree == 0` confirms is still sound.
+        // `cache_panic > 0` is expected and harmless: this sweep synthesises
+        // `ev` at the *exact* upstream threshold, forcing Taylor depths past the
+        // U2048 cap. Real dense-mapping `ev` is a blake2b digest — pseudo-random,
+        // never within ~800 of the threshold (P ~ 2^-503) — so the cap is
+        // unreachable in production: the random-`ev` overflow test has zero cache
+        // panics. A cap panic aborts proving (no verdict emitted), which
+        // `unsafe_disagree == 0` confirms is still sound.
     }
 }

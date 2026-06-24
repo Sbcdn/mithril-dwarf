@@ -18,10 +18,10 @@
 //! | 4 | Check ordering in `verify_standard_certificate`         | orchestr. | Yes (top-level)     |
 //! | 5 | usize-vs-u64 BLS scalar index width on RISC0            | platform  | Yes (BLS math)      |
 //! | 6 | NextAvk chain compare: bytewise vs structural           | check     | On real chains      |
-//! | 7 | Lottery `x` via crypto-ratio `from_float` (~2^-52)      | lottery   | Safe-direction only |
 //! | 8 | Lottery `q` uses `2^512-1` for `ev_max` (not `2^512`)   | lottery   | Safe-direction only |
 //!
-//! (#9 — U512 Taylor overflow — is now RESOLVED; see the closed list.)
+//! (#7 — lottery `from_float` ~2^-52 — and #9 — U512 Taylor overflow — are
+//! now RESOLVED; see the closed list.)
 //!
 //! Divergences #7–#8 are pinned by the differential-fuzz suite in
 //! `mithril_dwarf::certificate_verification::complex_checks::
@@ -37,6 +37,17 @@
 //! - #2 — Ed25519 non-strict verify. Aligned with upstream by switching
 //!   to `verify_strict` at the genesis-cert call site; measured cost
 //!   ~74k host cycles per chain (one call per chain, genesis-only).
+//! - #7 — lottery `x` via `from_float` (~2^-52 truncation of `c`). RESOLVED
+//!   by switching the per-cert `c = ln(1-phi_f)` to crypto-ratio
+//!   `from_float_exact` (0.2.2), which reproduces the f64's exact dyadic value
+//!   bit-for-bit identically to upstream's `num_rational::Ratio::from_float`.
+//!   dwarf's `c` (and thus `x`) is now equal to upstream's, so the ~2^-52
+//!   winning-`ev` sliver is gone: `dwarf_matches_upstream_random` reports
+//!   `mismatches == 0` (was a measure-~2^-52 effect). Side effect: the exact
+//!   `c` has a ~3-bit-larger denominator, so an `ev` at the *exact* decision
+//!   boundary overruns the U2048 cap sooner — sound (a cap panic aborts, never
+//!   a false accept) and production-unreachable (random `ev` resolves with zero
+//!   cache panics, `cache_resolves_overflow_matching_upstream`).
 //! - #9 — U512 Taylor overflow → panic. RESOLVED by an adaptive wide
 //!   fallback: when the U512 series overflows building a bound, that
 //!   signer's decision is recomputed in U1024, then U2048. Was reachable
@@ -47,22 +58,6 @@
 //!   matching_upstream, quantify_boundary_gap_vs_upstream}`. U2048 is the
 //!   cap — only a synthetic `ev` placed at the exact decision boundary
 //!   exceeds it, which a real hash-derived `ev` never does.
-//!
-//! Divergence #7 — Lottery `x` via crypto-ratio `from_float`
-//!
-//! Upstream computes `c = ln(1 - phi_f)` as an EXACT rational of the f64
-//! (`num_rational::Ratio::from_float`). dwarf uses crypto-ratio
-//! `RatioU512::from_float`, which is `round(f * 2^52) / 2^52` — a ~2^-52
-//! truncation. So dwarf's per-signer `x = -w * c` differs from upstream's
-//! by ~2^-52 relative. This shifts dwarf's winning `ev` threshold from
-//! upstream's by up to ~2^460 in absolute `ev` terms, i.e. a
-//! measure-~2^-52 sliver of the 2^512 `ev` space.
-//!
-//! For a real (hash-derived) `ev` the probability of landing in that
-//! sliver is ~2^-52, so the corpus is verdict-equivalent. The boundary
-//! sweep in `upstream_differential::quantify_boundary_gap_vs_upstream`
-//! confirms that within the sliver dwarf is only ever MORE conservative
-//! (rejects what upstream accepts) or overflows — never the reverse.
 //!
 //! Divergence #8 — Lottery `q` uses `ev_max = 2^512 - 1`
 //!

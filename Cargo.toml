@@ -58,7 +58,7 @@ pallas-codec = { version = "=1.0.0", default-features = false, optional = true }
 pallas-crypto = { version = "=1.0.0", default-features = false, optional = true }
 
 crypto-bigint = { version = "0.5.5", features = ["alloc"] }
-crypto-ratio = "0.2.1"
+crypto-ratio = "0.2.2"
 
 hex = "0.4"
 blst = "=0.3.15"
