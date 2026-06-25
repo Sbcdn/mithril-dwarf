@@ -139,30 +139,59 @@ fn dwarf_lottery_oracle_matches_pinned_upstream() {
         &rev[..7]
     );
 
+    // Non-vacuity guard: a degenerate extraction (empty body) would make the
+    // assert_eq above pass `"" == ""`. Require the proven body to be substantial
+    // and contain the recurrence's defining tokens.
+    for token in ["new_x=(new_x.clone()*x.clone())/divisor.clone()", "error_term", "phi"] {
+        assert!(
+            up_taylor.contains(&normalize(token)) && up_taylor.len() > 100,
+            "taylor_comparison extraction looks degenerate (missing `{token}`) — the \
+             fn_body parser or the source layout changed; the pin would be vacuous."
+        );
+    }
+
     // 2. `is_lottery_won`'s construction (q, c, w, x, the 1000-term call) is what
     //    dwarf's production `lottery_q` + per-signer `x` mirror. dwarf's `upstream_won`
     //    re-port intentionally takes `ev` as BigInt for boundary probing, so it is not
-    //    body-identical; instead pin the construction invariants against the live
-    //    upstream so a change to any of them trips here.
+    //    body-identical; instead pin the construction invariants on BOTH sides — the
+    //    live upstream `is_lottery_won` AND dwarf's `upstream_won` re-port — so a change
+    //    upstream OR a drift in the re-port's q/c/w/x build both trip here.
     let up_won = normalize(&fn_body(&upstream, "fn is_lottery_won"));
+    let dwarf_won = normalize(&fn_body(&dwarf, "fn upstream_won"));
     for needle in [
         "BigInt::from(2u8).pow(512)",          // ev_max = 2^512
         "Ratio::new_raw(ev_max.clone(),",      // q = ev_max / (ev_max - ev)
         "Ratio::from_float((1.0-phi_f).ln())", // c = ln(1 - phi_f)
         "(w*c).neg()",                         // x = -(w * c)
-        "taylor_comparison(1000,",             // 1000-term bound
     ] {
+        let n = normalize(needle);
         assert!(
-            up_won.contains(&normalize(needle)),
-            "upstream `is_lottery_won` no longer contains `{needle}` (rev {}). \
-             The lottery construction changed — re-review dwarf's lottery_q / x build \
-             and the `upstream_won` re-port.",
+            up_won.contains(&n),
+            "upstream `is_lottery_won` no longer contains `{needle}` (rev {}). The lottery \
+             construction changed — re-review dwarf's lottery_q / x build and the re-port.",
             &rev[..7]
         );
+        assert!(
+            dwarf_won.contains(&n),
+            "dwarf's `upstream_won` re-port no longer contains `{needle}` — the fuzz oracle's \
+             q/c/w/x construction has DRIFTED from upstream `is_lottery_won`. The differential \
+             fuzz would be validating production against a stale construction. Re-sync it."
+        );
     }
+    // Each side invokes the same 1000-term Taylor (named per side).
+    assert!(
+        up_won.contains(&normalize("taylor_comparison(1000,")),
+        "upstream `is_lottery_won` no longer calls `taylor_comparison(1000, ...)` (rev {}).",
+        &rev[..7]
+    );
+    assert!(
+        dwarf_won.contains(&normalize("upstream_taylor(1000,")),
+        "dwarf's `upstream_won` re-port no longer calls `upstream_taylor(1000, ...)`."
+    );
 
     eprintln!(
-        "oracle pin OK: dwarf lottery re-port matches upstream eligibility.rs @ {}",
+        "oracle pin OK: dwarf lottery re-port (taylor + construction) matches upstream \
+         eligibility.rs @ {}",
         &rev[..7]
     );
 }
