@@ -1438,7 +1438,7 @@ mod upstream_differential {
         );
     }
 
-    /// Random fuzz vs upstream BigInt. Random 512-bit `ev` is essentially
+    /// Random fuzz vs upstream BigInt. Random 512-bit `ev` is almost
     /// never in the ~2^-52 boundary sliver, so dwarf and upstream must
     /// agree everywhere here — a non-zero count would mean a blatant `x`/`q`
     /// construction bug, not a boundary effect. Also asserts cache==old.
@@ -1583,7 +1583,7 @@ mod upstream_differential {
         // the f64 `ln(1-phi_f)` (matching upstream bit-for-bit), the boundary
         // denominators are ~3 bits larger, so an `ev` synthesised at the *exact*
         // upstream threshold (±800) now overruns the cap rather than resolving:
-        // the sweep is essentially all `cache_panic`. Either path counts as
+        // the sweep is almost entirely `cache_panic`. Either path counts as
         // exercising the overflow regime; the load-bearing invariant is
         // soundness, asserted above (`unsafe_disagree == 0`).
         assert!(
