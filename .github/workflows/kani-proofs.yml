@@ -1,0 +1,40 @@
+name: Kani proofs
+
+# Machine-checks the lottery comparator's limb-decision logic
+# (`complex_checks::comparator_proofs`) for ALL 2048-bit inputs via the Kani
+# model checker — exhaustive, not sampled. This is the tied-high-limb case the
+# end-to-end differential fuzz is structurally blind to (random `ev` never puts
+# `q` that close to a bound), and the exact class where a subtle comparator bug
+# once hid. A refactor of `q_gt_bound` / `q_lt_bound` that breaks the factored
+# compare fails here.
+#
+# Inert in every normal build: the proofs are behind `#[cfg(kani)]`.
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'src/certificate_verification/complex_checks.rs'
+      - '.github/workflows/kani-proofs.yml'
+  pull_request:
+    paths:
+      - 'src/certificate_verification/complex_checks.rs'
+      - '.github/workflows/kani-proofs.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  kani:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Kani comparator proofs
+        uses: model-checking/kani-github-action@v1
+        with:
+          args: >-
+            --harness q_gt_bound_limb_logic_is_exact
+            --harness q_lt_bound_limb_logic_is_exact

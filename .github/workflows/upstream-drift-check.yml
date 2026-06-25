@@ -2,7 +2,7 @@ name: Upstream Mithril Drift Check
 
 # Weekly + on-demand check: rebuild the equivalence harness against
 # the LATEST upstream Mithril (Sbcdn/mithril.git#main) instead of the
-# pinned rev (36fd7f8818f0ff14b10336fa7f855d52698e40a8). Any test
+# pinned rev (7e787deefd079c3f2b3160785e58a6b4affc1340). Any test
 # failure here means upstream has diverged in a way our pinned-rev
 # harness would not have caught.
 #
@@ -22,7 +22,7 @@ name: Upstream Mithril Drift Check
 #
 # When this fails, the investigation path is:
 #   1. Read the diff between the pinned rev and current upstream main:
-#        git log 36fd7f88..main mithril-common mithril-stm mithril-client
+#        git log 7e787de..main mithril-common mithril-stm mithril-client
 #   2. Identify which test failed (per-cert byte equality, mutation
 #      verdict, pin test).
 #   3. Determine whether the upstream change should be reflected in:
@@ -116,17 +116,49 @@ jobs:
         run: cargo test -p mithril-dwarf-harness --release --test intentional_divergences 2>&1
         continue-on-error: true
 
+      # Direct semantic check on the soundness-critical path: the positive
+      # corpus is all-won and would not flip on a subtle lottery threshold
+      # change, so behaviour tests can miss it. Diff upstream main's lottery
+      # construction against the invariants dwarf's lottery_q / x build mirror.
+      # The freshly-fetched main checkout is the newest eligibility.rs on disk.
+      - name: Check upstream lottery construction (main)
+        id: lottery
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        run: |
+          SRC=$(find ~/.cargo/git/checkouts -path '*mithril-stm/src/proof_system/concatenation/eligibility.rs' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+          echo "Newest upstream eligibility.rs: $SRC"
+          test -n "$SRC" || { echo "could not locate upstream eligibility.rs"; exit 1; }
+          MISSING=0
+          while IFS= read -r inv; do
+            grep -qF "$inv" "$SRC" || { echo "LOTTERY CHANGED: missing invariant -> $inv"; MISSING=1; }
+          done <<'INV'
+          BigInt::from(2u8).pow(512)
+          Ratio::from_float((1.0 - phi_f).ln())
+          (w * c).neg()
+          taylor_comparison(1000
+          new_x = (new_x.clone() * x.clone()) / divisor.clone()
+          new_x.clone().abs() * BigInt::from(3)
+          INV
+          if [ "$MISSING" -ne 0 ]; then
+            echo "::warning::Upstream lottery construction changed on main — SOUNDNESS REVIEW required before bumping the rev (re-sync the upstream_taylor / upstream_won re-port and the oracle pin)."
+            exit 1
+          fi
+          echo "Lottery construction on main is unchanged from the pinned invariants."
+
       - name: Report drift status
         if: always()
         run: |
           BUILD=${{ steps.build.outcome }}
           HARNESS=${{ steps.harness.outcome }}
           DIVERGENCES=${{ steps.divergences.outcome }}
+          LOTTERY=${{ steps.lottery.outcome }}
 
           echo "=== Upstream Drift Check Report ==="
           echo "Build:           $BUILD"
           echo "Equivalence:     $HARNESS"
           echo "Divergence pin:  $DIVERGENCES"
+          echo "Lottery semantics: $LOTTERY"
 
           if [ "$BUILD" != "success" ]; then
             echo
@@ -135,14 +167,24 @@ jobs:
             exit 1
           fi
 
+          if [ "$LOTTERY" != "success" ]; then
+            echo
+            echo "LOTTERY DRIFT: upstream main changed the lottery construction."
+            echo "   This is the soundness-critical path. Before bumping the rev:"
+            echo "   re-review dwarf's lottery_q / per-signer x build, re-sync the"
+            echo "   upstream_taylor / upstream_won re-port + the oracle pin, and"
+            echo "   re-run the differential fuzz (cargo test -p mithril-dwarf --release -- --ignored)."
+            exit 1
+          fi
+
           if [ "$HARNESS" != "success" ] || [ "$DIVERGENCES" != "success" ]; then
             echo
             echo "DRIFT DETECTED: upstream behaviour differs from pinned rev."
-            echo "   Pinned: 36fd7f8818f0ff14b10336fa7f855d52698e40a8"
+            echo "   Pinned: 7e787deefd079c3f2b3160785e58a6b4affc1340"
             echo
             echo "   Investigation path:"
             echo "   1. Compare upstream commits:"
-            echo "      git log 36fd7f88..main mithril-common mithril-stm mithril-client"
+            echo "      git log 7e787de..main mithril-common mithril-stm mithril-client"
             echo "   2. Determine the failure class:"
             echo "      a. divergence-registry entry needs update"
             echo "      b. dwarf code needs to track upstream change"

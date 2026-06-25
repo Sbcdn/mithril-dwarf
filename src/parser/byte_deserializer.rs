@@ -533,4 +533,37 @@ mod bounds_overflow_tests {
             let _ = certificate_from_bytes(&adv);
         }
     }
+
+    #[test]
+    fn valid_cert_byte_mutations_never_panic() {
+        // Structured fuzz: start from a real, parseable cert and corrupt it the
+        // way a wire error or adversary would — single-byte mutations and
+        // truncations — rather than from pure noise. Each length prefix flows
+        // through every length-driven read with a *valid* preamble in front, so
+        // it reaches deeper parser states than random bytes do. Every call must
+        // return (Ok or Err), never panic.
+        let valid = include_bytes!("../../testdata/cert_current.bin");
+        assert!(
+            certificate_from_bytes(valid).is_ok(),
+            "fixture cert_current.bin must parse as the fuzz baseline"
+        );
+
+        // Every truncation — exercises a clean cut at each offset.
+        for len in 0..valid.len() {
+            let _ = certificate_from_bytes(&valid[..len]);
+        }
+
+        // Single-byte mutations at a stride (full sweep would be 46k*3 parses;
+        // a stride still hits every field region). 0x00 / 0xFF / bit-flip flush
+        // out length fields, counts, and discriminants toward their edges.
+        let mut buf = valid.to_vec();
+        for pos in (0..valid.len()).step_by(7) {
+            let orig = buf[pos];
+            for m in [0x00u8, 0xFF, orig ^ 0xFF] {
+                buf[pos] = m;
+                let _ = certificate_from_bytes(&buf);
+            }
+            buf[pos] = orig;
+        }
+    }
 }

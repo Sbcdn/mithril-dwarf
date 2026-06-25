@@ -44,6 +44,12 @@ tx-components = [
     "dep:pallas-crypto",
 ]
 
+# `cfg(kani)` gates the formal proof harnesses in complex_checks.rs; declare it
+# so it is not flagged as an unexpected cfg under `-D warnings`. Active only
+# under `cargo kani`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [dependencies]
 blake2 = "0.10.6"
 fixed = "1.28"

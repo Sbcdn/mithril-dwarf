@@ -626,6 +626,62 @@ fn q_lt_bound(q: &Ratio512, bound: &Ratio512, ad: &(U512, U512)) -> bool {
     }
 }
 
+/// Formal proofs (run with `cargo kani`; inert in normal builds).
+///
+/// `q_gt_bound`/`q_lt_bound` decide the ordering of two 1024-bit cross-products
+/// `(ad.1:ad.0)` and `(bc_hi:bc_lo)` from just the two U512 limb comparisons.
+/// That factoring once hid a bug in the tied-high-limb case (`ad.1 == bc_hi`),
+/// which the end-to-end fuzz is provably blind to (random `ev` never puts `q`
+/// that close to a bound). These proofs exhaustively verify the limb logic
+/// against the real 1024-bit comparison for ALL inputs. They mirror the match
+/// arms in `q_gt_bound`/`q_lt_bound` above verbatim; the `factored_compare_*`
+/// unit tests pin the production functions to that same logic on concrete
+/// near-equality vectors. (The Taylor *step* is not Kani-provable — symbolic
+/// 512-bit rational multiplication is intractable for the model checker — so
+/// that leg stays covered by the differential fuzz + the upstream-oracle pin.)
+#[cfg(kani)]
+mod comparator_proofs {
+    use super::*;
+    use core::cmp::Ordering;
+
+    fn any_u512() -> U512 {
+        U512::from_words(core::array::from_fn(|_| kani::any()))
+    }
+
+    /// Reconstruct the full 1024-bit value `(hi:lo)` from its two U512 limbs —
+    /// the independent reference the limb logic must agree with.
+    fn join(hi: &U512, lo: &U512) -> U1024 {
+        let mut w = [0u64; 16];
+        w[..8].copy_from_slice(&lo.to_words());
+        w[8..].copy_from_slice(&hi.to_words());
+        U1024::from_words(w)
+    }
+
+    #[kani::proof]
+    fn q_gt_bound_limb_logic_is_exact() {
+        let (ad0, ad1, bc_lo, bc_hi) = (any_u512(), any_u512(), any_u512(), any_u512());
+        let gt = match ad1.cmp(&bc_hi) {
+            Ordering::Greater => true,
+            Ordering::Less => false,
+            Ordering::Equal => ad0.cmp(&bc_lo) == Ordering::Greater,
+        };
+        let want = join(&ad1, &ad0).cmp(&join(&bc_hi, &bc_lo)) == Ordering::Greater;
+        assert_eq!(gt, want);
+    }
+
+    #[kani::proof]
+    fn q_lt_bound_limb_logic_is_exact() {
+        let (ad0, ad1, bc_lo, bc_hi) = (any_u512(), any_u512(), any_u512(), any_u512());
+        let lt = match ad1.cmp(&bc_hi) {
+            Ordering::Less => true,
+            Ordering::Greater => false,
+            Ordering::Equal => ad0.cmp(&bc_lo) == Ordering::Less,
+        };
+        let want = join(&ad1, &ad0).cmp(&join(&bc_hi, &bc_lo)) == Ordering::Less;
+        assert_eq!(lt, want);
+    }
+}
+
 /// Merkle batch-proof verification. Index sortedness uses `<=` (not
 /// strict `<`) to match upstream's sort-and-equality check, which
 /// admits equal-consecutive entries.
@@ -1206,7 +1262,11 @@ mod upstream_differential {
     use std::ops::Neg;
 
     // ---- Faithful re-port of upstream (BigInt, arbitrary precision) ----
-    // eligibility.rs L63-81. Char-for-char; diff against the pinned rev.
+    // Verbatim body of `taylor_comparison` in mithril-stm
+    // proof_system/concatenation/eligibility.rs at the pinned rev. Kept
+    // byte-identical (modulo comments/whitespace) so the harness test
+    // `upstream_lottery_oracle_pin` can mechanically assert it has not drifted
+    // from the live upstream source — re-sync both on a rev bump.
     fn upstream_taylor(bound: usize, cmp: Ratio<BigInt>, x: Ratio<BigInt>) -> bool {
         let mut new_x = x.clone();
         let mut phi: Ratio<BigInt> = One::one();
@@ -1216,7 +1276,7 @@ mod upstream_differential {
             divisor += 1;
             new_x = (new_x.clone() * x.clone()) / divisor.clone();
             let error_term = new_x.clone().abs() * BigInt::from(3);
-            if cmp > phi.clone() + error_term.clone() {
+            if cmp > (phi.clone() + error_term.clone()) {
                 return false;
             } else if cmp < phi.clone() - error_term.clone() {
                 return true;

@@ -1534,6 +1534,22 @@ fn corpus_diversity_report() {
          shape has signers winning well over 255 indexes."
     );
 
+    // Structural-diversity floor: at least one few-signer cert. A few large
+    // pools holding most of the stake make `w = stake/total` large, so
+    // `x = -w·ln(1-phi_f)` is wide and the per-index Taylor series overflows
+    // U512 into the U1024/U2048 wide fallback — the soundness-critical lottery
+    // corner that the preview overflow bug lived in, and the one most sensitive
+    // to the exact-`c` denominator. Mainnet/preprod, with stake spread thin,
+    // never reach it; without a few-signer cert the wide fallback goes
+    // unexercised by the equivalence run.
+    assert!(
+        min_signers <= 10,
+        "Corpus diversity: fewest signers on any cert is {min_signers} (> 10). \
+         No few-megapool / large-`w` cert is present, so the U512->U1024->U2048 \
+         lottery wide-fallback path is unexercised. Re-run fetch_diverse_corpus.sh \
+         — it pulls testing-preview certs whose 3-signer shape drives the fallback."
+    );
+
     // Multi-network coverage. Gap 3 plumbing (genesis_vk_for_cert)
     // routes per cert.metadata.network; if the corpus collapses to
     // a single network the per-network VK plumbing is untested.
